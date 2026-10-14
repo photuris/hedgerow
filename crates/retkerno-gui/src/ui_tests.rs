@@ -1204,3 +1204,276 @@ async fn chat_send_is_refused_when_slot_changed_before_ui_consumes_updates() {
         fake.state().sent
     );
 }
+
+/// A channel form filled on A must not write to B after reconnect.
+#[tokio::test]
+async fn r2_add_channel_draft_does_not_cross_nodes() {
+    let (mut dom, ui, fake) = setup("settings:channels").await;
+    change(&dom, "new-kind", "private");
+    settle(&mut dom).await;
+    type_in(&dom, "new-name", "Private for A");
+    type_in(&dom, "new-key", &"42".repeat(16));
+    settle(&mut dom).await;
+    ui.session.send(Command::Disconnect);
+    settle(&mut dom).await;
+    fake.state().device.node_id = other_node();
+    ui.session.send(Command::Connect);
+    settle(&mut dom).await;
+    assert_eq!(device(&ui).node_id, other_node());
+    assert_eq!(
+        value_of(&dom, "new-name").as_deref(),
+        Some(""),
+        "the draft prepared for A survived onto B"
+    );
+    click(&dom, &button(&dom, "Add", false));
+    settle(&mut dom).await;
+    assert!(
+        !fake
+            .state()
+            .calls
+            .iter()
+            .any(|c| c.starts_with("set_channel")),
+        "channel credentials prepared for A were installed on B: {:?}",
+        fake.state().calls
+    );
+}
+
+/// A local stale-slot refusal must explain why Remove did nothing.
+#[tokio::test]
+async fn r2_channel_remove_refusal_is_visible() {
+    let (mut dom, ui, fake) = setup("settings:channels").await;
+    click(&dom, &button(&dom, "Remove", false));
+    settle(&mut dom).await;
+    let confirm = button(&dom, "Remove", true);
+    let node = device(&ui).node_id;
+    fake.state().channels[0].secret = [7; 16];
+    ui.session.send(Command::Refresh);
+    for _ in 0..100 {
+        if ui
+            .store
+            .channels(&node)
+            .unwrap()
+            .iter()
+            .any(|c| c.idx == 0 && c.secret == [7; 16])
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        ui.store
+            .channels(&node)
+            .unwrap()
+            .iter()
+            .any(|c| c.idx == 0 && c.secret == [7; 16])
+    );
+    click(&dom, &confirm);
+    settle(&mut dom).await;
+    assert!(
+        !fake
+            .state()
+            .calls
+            .iter()
+            .any(|c| c.starts_with("clear_channel"))
+    );
+    assert!(!dialog_has_button(&dom, "Remove"));
+    assert!(
+        ui.toast.peek().is_some(),
+        "stale-slot Remove closed with no cancellation notice"
+    );
+}
+
+/// The actor guard must compare the original untrimmed name.
+#[tokio::test]
+async fn r2_apply_accepts_untrimmed_device_name() {
+    let (mut dom, ui, fake) = setup("settings:device").await;
+    fake.state().device.name = " Demo Node ".into();
+    ui.session.send(Command::Refresh);
+    settle(&mut dom).await;
+    assert_eq!(device(&ui).name, " Demo Node ");
+    type_in(&dom, "dev-power", "18");
+    dom.render_immediate_to_vec();
+    click(&dom, &button(&dom, "Apply", false));
+    settle(&mut dom).await;
+    click(&dom, &button(&dom, "Apply", true));
+    settle(&mut dom).await;
+    assert_eq!(
+        fake.state().device.tx_power,
+        18,
+        "legitimate Apply was refused"
+    );
+    assert!(!fake.state().frames.is_empty());
+}
+
+/// Retry from an old bubble must carry its original node.
+#[tokio::test]
+async fn r2_retry_refuses_stale_node() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let textarea = open_composer(&mut dom, &ui).await;
+    fake.state().fail_call = Some((
+        "send_channel_text".into(),
+        retkerno_core::radio::FakeFailure::Rejected("test".into()),
+    ));
+    type_into(&dom, &textarea, "failed draft on A");
+    press_enter(&dom, &textarea);
+    settle(&mut dom).await;
+    let retry = button(&dom, "Retry", false);
+    ui.session.send(Command::Disconnect);
+    wait_session(&ui, |s| *s == ConnState::Disconnected).await;
+    fake.state().device.node_id = other_node();
+    ui.session.send(Command::Connect);
+    wait_session(
+        &ui,
+        |s| matches!(s, ConnState::Connected(d) if d.node_id == other_node()),
+    )
+    .await;
+    assert_eq!(device(&ui).node_id, node);
+    click(&dom, &retry);
+    settle(&mut dom).await;
+    assert!(fake.state().sent.is_empty());
+    assert_eq!(
+        ui.toast.peek().as_deref(),
+        Some("The radio changed; action cancelled")
+    );
+}
+
+/// A stale Remove control must not create a confirmation bound to B.
+#[tokio::test]
+async fn r2_contact_remove_opening_uses_displayed_node() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+    let remove = button(&dom, "Remove", false);
+    let alice = fake.state().contacts[0].public_key.clone();
+    ui.session.send(Command::Disconnect);
+    wait_session(&ui, |s| *s == ConnState::Disconnected).await;
+    fake.state().device.node_id = other_node();
+    fake.state().contacts[0].name = "B's Alice".into();
+    ui.session.send(Command::Connect);
+    wait_session(
+        &ui,
+        |s| matches!(s, ConnState::Connected(d) if d.node_id == other_node()),
+    )
+    .await;
+    // Consume the actor state without rendering new rows: the old button is visible.
+    in_app(&dom, || ui.apply_state(ui.session.state()));
+    click(&dom, &remove);
+    settle(&mut dom).await;
+    if dialog_has_button(&dom, "Remove") {
+        click(&dom, &button(&dom, "Remove", true));
+        settle(&mut dom).await;
+    }
+    assert!(
+        fake.state().contacts.iter().any(|c| c.public_key == alice),
+        "a Remove drawn for A deleted B's contact: {:?}",
+        fake.state().calls
+    );
+}
+
+/// A stale channel-row Remove must retain the node it was drawn for.
+#[tokio::test]
+async fn r2_channel_remove_opening_uses_displayed_node() {
+    let (mut dom, ui, fake) = setup("settings:channels").await;
+    let remove = button(&dom, "Remove", false);
+    ui.session.send(Command::Disconnect);
+    wait_session(&ui, |s| *s == ConnState::Disconnected).await;
+    fake.state().device.node_id = other_node();
+    fake.state().channels[0].name = "B's Public".into();
+    ui.session.send(Command::Connect);
+    wait_session(
+        &ui,
+        |s| matches!(s, ConnState::Connected(d) if d.node_id == other_node()),
+    )
+    .await;
+    in_app(&dom, || ui.apply_state(ui.session.state()));
+    click(&dom, &remove);
+    settle(&mut dom).await;
+    if dialog_has_button(&dom, "Remove") {
+        click(&dom, &button(&dom, "Remove", true));
+        settle(&mut dom).await;
+    }
+    assert!(
+        fake.state().channels.iter().any(|c| c.idx == 0),
+        "a Remove drawn for A deleted B's Public channel: {:?}",
+        fake.state().calls
+    );
+}
+
+/// Channel Retry must use stored secret identity rather than the stale slot.
+#[tokio::test]
+async fn r2_retry_refuses_replaced_channel() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let textarea = open_composer(&mut dom, &ui).await;
+    fake.state().fail_call = Some((
+        "send_channel_text".into(),
+        retkerno_core::radio::FakeFailure::Rejected("test".into()),
+    ));
+    type_into(&dom, &textarea, "failed on Public");
+    press_enter(&dom, &textarea);
+    settle(&mut dom).await;
+    let retry = button(&dom, "Retry", false);
+    fake.state().channels[0].secret = [7; 16];
+    ui.session.send(Command::Refresh);
+    for _ in 0..100 {
+        if ui
+            .store
+            .channels(&node)
+            .unwrap()
+            .iter()
+            .any(|c| c.idx == 0 && c.secret == [7; 16])
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        ui.store
+            .channels(&node)
+            .unwrap()
+            .iter()
+            .any(|c| c.idx == 0 && c.secret == [7; 16])
+    );
+    click(&dom, &retry);
+    settle(&mut dom).await;
+    assert!(
+        fake.state().sent.is_empty(),
+        "Retry sent through the replacement channel"
+    );
+}
+
+/// Import's actor guard must also work before the pending effect can close it.
+#[tokio::test]
+async fn r2_import_refuses_actor_node_change_before_ui_update() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    click(&dom, &button(&dom, "Import…", false));
+    settle(&mut dom).await;
+    let textarea = els(&dom)
+        .into_iter()
+        .find(|e| e.tag == "textarea" && e.dialog)
+        .unwrap();
+    type_into(
+        &dom,
+        &textarea,
+        &format!("meshcore://02{}{}", "77".repeat(32), "526576696577"),
+    );
+    settle(&mut dom).await;
+    let import = button(&dom, "Import", true);
+    ui.session.send(Command::Disconnect);
+    wait_session(&ui, |s| *s == ConnState::Disconnected).await;
+    fake.state().device.node_id = other_node();
+    ui.session.send(Command::Connect);
+    wait_session(
+        &ui,
+        |s| matches!(s, ConnState::Connected(d) if d.node_id == other_node()),
+    )
+    .await;
+    assert_eq!(device(&ui).node_id, node);
+    click(&dom, &import);
+    settle(&mut dom).await;
+    assert!(!fake.state().calls.iter().any(|c| c == "import_contact"));
+    assert_eq!(
+        ui.toast.peek().as_deref(),
+        Some("The radio changed; action cancelled")
+    );
+}

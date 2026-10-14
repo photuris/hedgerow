@@ -143,6 +143,8 @@ pub fn Channels() -> Element {
         }
     });
     let mut shown = use_signal(Vec::<u8>::new);
+    // The radio these rows are drawn for; Remove opens a dialog for it only.
+    let drawn = connected_node(&(ui.state)());
     let mut removing = use_pending::<Channel>();
     let connected = matches!((ui.state)(), ConnState::Connected(_));
     let title = if connected {
@@ -162,6 +164,7 @@ pub fn Channels() -> Element {
                     let key = text::to_hex(&ch.secret);
                     let (idx, copy_key, removed) = (ch.idx, key.clone(), ch.clone());
                     let copier = ui.clone();
+                    let drawn = drawn.clone();
 
                     rsx! {
                         div { key: "{ch.idx}", class: "channel-row",
@@ -190,7 +193,11 @@ pub fn Channels() -> Element {
                                 onclick: {
                                     let ui = ui.clone();
 
-                                    move |_| removing.set(Pending::open(&ui, removed.clone()))
+                                    move |_| {
+                                        if let Some(node) = &drawn {
+                                            removing.set(Pending::open(&ui, node, removed.clone()));
+                                        }
+                                    }
                                 },
                                 "Remove"
                             }
@@ -199,7 +206,17 @@ pub fn Channels() -> Element {
                 }
             }
         }
-        AddChannel { channels: channels(), max: max(), connected }
+        // Keyed by node, so a draft made for one radio is dropped, not
+        // carried over, when the session moves to another.
+        for node in [drawn.clone()] {
+            AddChannel {
+                key: "{node.as_deref().unwrap_or_default()}",
+                node,
+                channels: channels(),
+                max: max(),
+                connected,
+            }
+        }
         if let Some(pending) = removing() {
             Confirm {
                 title: "Remove channel",
@@ -221,16 +238,20 @@ pub fn Channels() -> Element {
                     move |_| {
                         removing.set(None);
 
-                        if pending.is_current(&ui.state.peek()) && slot_holds(&ui, &pending) {
-                            pending.send(
-                                &ui,
-                                Guard::ChannelSlot {
-                                    idx: pending.action.idx,
-                                    secret: Some(pending.action.secret),
-                                },
-                                Command::ClearChannel(pending.action.idx),
-                            );
+                        if !pending.is_current(&ui.state.peek()) || !slot_holds(&ui, &pending) {
+                            ui.show_cancelled();
+
+                            return;
                         }
+
+                        pending.send(
+                            &ui,
+                            Guard::ChannelSlot {
+                                idx: pending.action.idx,
+                                secret: Some(pending.action.secret),
+                            },
+                            Command::ClearChannel(pending.action.idx),
+                        );
                     }
                 },
                 oncancel: move |_| removing.set(None),
@@ -239,9 +260,10 @@ pub fn Channels() -> Element {
     }
 }
 
-/// The form that adds a hashtag or private channel.
+/// The form that adds a hashtag or private channel on the radio `node`, the
+/// one the session was connected to when the form was mounted.
 #[component]
-fn AddChannel(channels: Vec<Channel>, max: u8, connected: bool) -> Element {
+fn AddChannel(node: Option<String>, channels: Vec<Channel>, max: u8, connected: bool) -> Element {
     let ui = use_context::<Ui>();
     let mut kind = use_signal(|| NewKind::Hashtag);
     let mut name = use_signal(String::new);
@@ -260,10 +282,9 @@ fn AddChannel(channels: Vec<Channel>, max: u8, connected: bool) -> Element {
     let add = {
         let ui = ui.clone();
         let channels = channels.clone();
-        // The radio this form was drawn for; the session refuses the write
-        // if it, or the chosen slot, changed since.
-        let node = connected_node(&(ui.state)());
 
+        // The session refuses the write if the radio, or the chosen slot,
+        // changed since the form was mounted.
         move |_| {
             let Some(node) = &node else {
                 return;

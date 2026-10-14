@@ -17,9 +17,21 @@ pub struct Pending<T> {
 }
 
 impl<T> Pending<T> {
-    /// Opens a confirmation on the connected radio; `None` when not connected.
-    pub fn open(ui: &Ui, action: T) -> Option<Self> {
-        ui.connected_node().map(|node| Pending { node, action })
+    /// Opens a confirmation for the radio `shown` that the clicked control
+    /// was rendered for. When the session is no longer connected to `shown`
+    /// nothing opens and a toast says so: a dialog never adopts the live
+    /// radio in place of the one the user was looking at.
+    pub fn open(ui: &Ui, shown: &str, action: T) -> Option<Self> {
+        if ui.connected_node().as_deref() != Some(shown) {
+            ui.show_cancelled();
+
+            return None;
+        }
+
+        Some(Pending {
+            node: shown.to_string(),
+            action,
+        })
     }
 
     /// Whether `state` is a connection to the radio this was opened on.

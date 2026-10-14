@@ -307,6 +307,12 @@ impl Ui {
         });
     }
 
+    /// Tells the user that a confirmed action was dropped because the radio
+    /// it was meant for is gone or its state no longer matches.
+    pub fn show_cancelled(&self) {
+        self.show_toast("The radio changed; action cancelled".to_string());
+    }
+
     /// Puts `text` on the system clipboard; a failure becomes a toast.
     pub fn copy(&self, text: &str) {
         let mut clipboard = self.clipboard.borrow_mut();

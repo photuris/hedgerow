@@ -315,7 +315,7 @@ fn DeviceView(info: DeviceInfo) -> Element {
         move |_| ui.send_guarded(&node, Guard::Node, command.clone())
     };
     let apply = {
-        let ui = ui.clone();
+        let (ui, shown) = (ui.clone(), info.node_id.clone());
 
         // Everything is read now, not at render: the dialog's lines must
         // describe the radio as it is when Apply is clicked.
@@ -335,6 +335,7 @@ fn DeviceView(info: DeviceInfo) -> Element {
 
             pending.set(Pending::open(
                 &ui,
+                &shown,
                 ApplyPlan {
                     wanted,
                     from,
@@ -520,18 +521,24 @@ fn DeviceView(info: DeviceInfo) -> Element {
                         // Send only what the lines described: same radio, same
                         // settings as when they were computed, still valid.
                         let Some(device) = plan.device(&ui.state.peek()) else {
+                            ui.show_cancelled();
+
                             return;
                         };
 
-                        if settings_of(&device) == plan.action.from
-                            && plan.action.wanted.validate(&device).is_ok()
+                        if settings_of(&device) != plan.action.from
+                            || plan.action.wanted.validate(&device).is_err()
                         {
-                            plan.send(
-                                &ui,
-                                Guard::Device(plan.action.snapshot.clone()),
-                                Command::ApplySettings(plan.action.wanted.clone()),
-                            );
+                            ui.show_cancelled();
+
+                            return;
                         }
+
+                        plan.send(
+                            &ui,
+                            Guard::Device(plan.action.snapshot.clone()),
+                            Command::ApplySettings(plan.action.wanted.clone()),
+                        );
                     }
                 },
                 oncancel: move |_| pending.set(None),

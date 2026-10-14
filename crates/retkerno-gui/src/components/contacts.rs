@@ -112,7 +112,13 @@ pub fn Contacts() -> Element {
                     onclick: {
                         let ui = ui.clone();
 
-                        move |_| importing.set(Pending::open(&ui, ()))
+                        let node = node.clone();
+
+                        move |_| {
+                            if let Some(node) = &node {
+                                importing.set(Pending::open(&ui, node, ()));
+                            }
+                        }
                     },
                     "Import…"
                 }
@@ -156,7 +162,9 @@ pub fn Contacts() -> Element {
                         onremove: {
                             let ui = ui.clone();
 
-                            move |c: Contact| removing.set(Pending::open(&ui, c))
+                            move |(node, c): (String, Contact)| {
+                                removing.set(Pending::open(&ui, &node, c));
+                            }
                         },
                     }
                 }
@@ -176,13 +184,17 @@ pub fn Contacts() -> Element {
                         move |_| {
                             removing.set(None);
 
-                            if pending.is_current(&ui.state.peek()) {
-                                pending.send(
-                                    &ui,
-                                    Guard::Node,
-                                    Command::RemoveContact(pending.action.public_key.clone()),
-                                );
+                            if !pending.is_current(&ui.state.peek()) {
+                                ui.show_cancelled();
+
+                                return;
                             }
+
+                            pending.send(
+                                &ui,
+                                Guard::Node,
+                                Command::RemoveContact(pending.action.public_key.clone()),
+                            );
                         }
                     },
                     oncancel: move |_| removing.set(None),
@@ -198,7 +210,7 @@ fn ContactRow(
     contact: Contact,
     now: i64,
     node: Option<String>,
-    onremove: EventHandler<Contact>,
+    onremove: EventHandler<(String, Contact)>,
 ) -> Element {
     let ui = use_context::<Ui>();
     let connected = node.is_some();
@@ -213,7 +225,7 @@ fn ContactRow(
         contact.public_key.clone(),
     );
     let (ui_share, ui_reset) = (ui.clone(), ui.clone());
-    let (node_share, node_reset) = (node.clone(), node);
+    let (node_share, node_reset, node_remove) = (node.clone(), node.clone(), node);
     let removed = contact.clone();
 
     rsx! {
@@ -256,7 +268,11 @@ fn ContactRow(
                     class: "danger",
                     disabled: !connected,
                     title,
-                    onclick: move |_| onremove.call(removed.clone()),
+                    onclick: move |_| {
+                        if let Some(node) = &node_remove {
+                            onremove.call((node.clone(), removed.clone()));
+                        }
+                    },
                     "Remove"
                 }
             }
@@ -297,6 +313,8 @@ fn ImportDialog(pending: Pending<()>, onclose: EventHandler<()>) -> Element {
                     onclick: move |_| {
                         if pending.is_current(&ui.state.peek()) {
                             pending.send(&ui, Guard::Node, Command::ImportContact(text.peek().clone()));
+                        } else {
+                            ui.show_cancelled();
                         }
 
                         onclose.call(());
