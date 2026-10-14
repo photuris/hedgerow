@@ -25,6 +25,10 @@ use crate::text;
 /// How long one command may take before the outcome counts as unknown.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long reading every channel slot may take: one round trip per slot,
+/// and 20 slots over BLE need more than [`COMMAND_TIMEOUT`].
+const CHANNELS_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How long the full contact list may take to arrive.
 const CONTACTS_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -169,28 +173,11 @@ impl MeshRadio {
 
     /// Reads slots `0..max` and keeps the ones with a name.
     pub(super) async fn channels(&self, max: u8) -> Result<Vec<Channel>> {
-        let mut found = Vec::new();
-
-        for idx in 0..max {
-            let event = self
-                .command("channels", &[CMD_GET_CHANNEL, idx], EventType::ChannelInfo)
-                .await?;
-            let EventPayload::ChannelInfo(info) = event.payload else {
-                return Err(Error::Radio(format!("unexpected reply for channel {idx}")));
-            };
-
-            if info.name.is_empty() {
-                continue;
-            }
-
-            found.push(Channel {
-                idx: info.channel_idx,
-                name: info.name,
-                secret: info.secret,
-            });
-        }
-
-        Ok(found)
+        read_channels(max, |frame| async move {
+            self.command("channels", &frame, EventType::ChannelInfo)
+                .await
+        })
+        .await
     }
 
     /// Writes a channel into its slot.
@@ -345,12 +332,10 @@ impl MeshRadio {
     ) -> Result<()> {
         s.validate(current)?;
 
-        for frame in s.frames(current) {
-            self.command("apply_settings", &frame, EventType::Ok)
-                .await?;
-        }
-
-        Ok(())
+        write_settings(s.frames(current), |frame| async move {
+            self.command("apply_settings", &frame, EventType::Ok).await
+        })
+        .await
     }
 
     /// Stops the forwarder and closes the transport. Safe to call twice.
@@ -447,6 +432,60 @@ async fn within<T>(
     tokio::time::timeout(limit, work)
         .await
         .unwrap_or_else(|_| Err(Error::Radio(format!("timed out: {operation}"))))
+}
+
+/// Reads slots `0..max` through `send` and keeps the ones with a name.
+///
+/// The whole loop shares one [`CHANNELS_TIMEOUT`], so slow replies cannot
+/// add up past it. `send` takes a frame and awaits the matching reply.
+async fn read_channels<F, Fut>(max: u8, mut send: F) -> Result<Vec<Channel>>
+where
+    F: FnMut(Vec<u8>) -> Fut,
+    Fut: Future<Output = Result<MeshCoreEvent>>,
+{
+    within("channels", CHANNELS_TIMEOUT, async {
+        let mut found = Vec::new();
+
+        for idx in 0..max {
+            let event = send(vec![CMD_GET_CHANNEL, idx]).await?;
+
+            let EventPayload::ChannelInfo(info) = event.payload else {
+                return Err(Error::Radio(format!("unexpected reply for channel {idx}")));
+            };
+
+            if info.name.is_empty() {
+                continue;
+            }
+
+            found.push(Channel {
+                idx: info.channel_idx,
+                name: info.name,
+                secret: info.secret,
+            });
+        }
+
+        Ok(found)
+    })
+    .await
+}
+
+/// Sends each settings `frames` entry through `send`, in order.
+///
+/// The whole sequence shares one [`COMMAND_TIMEOUT`]; the outcome after
+/// expiry is unknown, so it is [`Error::Radio`], never a rejection.
+async fn write_settings<F, Fut>(frames: Vec<Vec<u8>>, mut send: F) -> Result<()>
+where
+    F: FnMut(Vec<u8>) -> Fut,
+    Fut: Future<Output = Result<MeshCoreEvent>>,
+{
+    within("apply_settings", COMMAND_TIMEOUT, async {
+        for frame in frames {
+            send(frame).await?;
+        }
+
+        Ok(())
+    })
+    .await
 }
 
 /// Wraps a library error: the outcome of the command is unknown.
@@ -854,6 +893,81 @@ mod tests {
             let err = rejection(&MeshCoreEvent::error("table full"));
 
             assert!(matches!(err, Error::Rejected(m) if m == "table full"));
+        }
+    }
+
+    mod read_channels {
+        use meshcore_rs::events::ChannelInfoData;
+
+        use super::*;
+
+        /// Answers each request after `delay` with a named channel.
+        async fn slow_reply(frame: Vec<u8>, delay: Duration) -> Result<MeshCoreEvent> {
+            tokio::time::sleep(delay).await;
+
+            Ok(MeshCoreEvent::new(
+                EventType::ChannelInfo,
+                EventPayload::ChannelInfo(ChannelInfoData {
+                    channel_idx: frame[1],
+                    name: "test".into(),
+                    secret: [1; 16],
+                }),
+            ))
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn should_return_timed_out_error_when_slow_slots_exceed_channels_deadline() {
+            let started = tokio::time::Instant::now();
+            let result = read_channels(20, |frame| slow_reply(frame, Duration::from_secs(2))).await;
+
+            assert!(
+                matches!(&result, Err(Error::Radio(m)) if m == "timed out: channels"),
+                "result was {result:?}"
+            );
+            assert_eq!(started.elapsed(), CHANNELS_TIMEOUT);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn should_read_every_slot_when_total_is_within_channels_budget() {
+            let result = read_channels(20, |frame| slow_reply(frame, Duration::from_secs(1))).await;
+
+            assert_eq!(result.map(|found| found.len()).ok(), Some(20));
+        }
+    }
+
+    mod write_settings {
+        use super::*;
+
+        /// Answers each request after `delay` with `Ok`.
+        async fn slow_ok(_frame: Vec<u8>, delay: Duration) -> Result<MeshCoreEvent> {
+            tokio::time::sleep(delay).await;
+
+            Ok(MeshCoreEvent::ok())
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn should_return_timed_out_error_when_slow_frames_exceed_apply_settings_deadline() {
+            let started = tokio::time::Instant::now();
+            let result = write_settings(vec![vec![8], vec![12], vec![11]], |frame| {
+                slow_ok(frame, Duration::from_secs(4))
+            })
+            .await;
+
+            assert!(
+                matches!(&result, Err(Error::Radio(m)) if m == "timed out: apply_settings"),
+                "result was {result:?}"
+            );
+            assert_eq!(started.elapsed(), COMMAND_TIMEOUT);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn should_send_every_frame_when_total_is_within_budget() {
+            let result = write_settings(vec![vec![8], vec![12]], |frame| {
+                slow_ok(frame, Duration::from_secs(4))
+            })
+            .await;
+
+            assert!(result.is_ok(), "result was {result:?}");
         }
     }
 

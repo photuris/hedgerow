@@ -77,6 +77,9 @@ pub struct FakeState {
     pub fail_next: Option<String>,
     /// Fails the next call whose record starts with the prefix.
     pub fail_call: Option<(String, FakeFailure)>,
+    /// Panics right after recording the next call whose record starts
+    /// with the prefix. One-shot: taken when it fires.
+    pub panic_after: Option<String>,
     /// Makes the session's connect step fail.
     pub fail_connect: bool,
     /// How long `start` sleeps (tokio time) before it records the call
@@ -111,6 +114,7 @@ impl FakeRadio {
             calls: Vec::new(),
             fail_next: None,
             fail_call: None,
+            panic_after: None,
             fail_connect: false,
             start_delay_ms: 0,
             ack_timeout_ms: 3000,
@@ -147,13 +151,25 @@ impl FakeRadio {
         self.events.subscribe()
     }
 
-    /// Records `call`, then applies `fail_call` and `fail_next`.
+    /// Records `call`, panics if `panic_after` matches, then applies
+    /// `fail_call` and `fail_next`.
     ///
     /// Returns the locked state when no failure is armed for this call.
     fn enter(&self, call: String) -> Result<MutexGuard<'_, FakeState>> {
         let mut st = self.state();
 
         st.calls.push(call.clone());
+
+        if st
+            .panic_after
+            .as_ref()
+            .is_some_and(|prefix| call.starts_with(prefix.as_str()))
+        {
+            st.panic_after = None;
+            drop(st);
+
+            panic!("fake radio panic after {call}");
+        }
 
         if st
             .fail_call

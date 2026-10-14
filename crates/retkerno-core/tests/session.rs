@@ -718,16 +718,106 @@ async fn should_connect_with_new_config_when_reconfigured_while_connecting() {
 
     let store = Store::open_memory().unwrap();
     let s = spawn(&f, &store, false);
+    let mut rx = s.subscribe();
 
     s.send(Command::Connect);
     wait_for("connecting", || s.state() == ConnState::Connecting).await;
-    s.send(Command::Reconfigure(cfg(false)));
-    wait_for("second start", || count(&f, "start") == 2).await;
-    wait_for("connected", || connected(&s)).await;
 
+    // The first attempt already opened its radio; only the replacement
+    // attempt meets the refusal.
+    f.state().fail_connect = true;
+    s.send(Command::Reconfigure(cfg(true)));
+
+    let mut failed_at = Vec::new();
+
+    while failed_at.len() < 2 {
+        let update = tokio::time::timeout(Duration::from_secs(60), rx.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "no retry after {} failed attempt(s): the new auto_connect was ignored",
+                    failed_at.len()
+                )
+            })
+            .unwrap();
+
+        if matches!(update, Update::State(ConnState::Failed(_))) {
+            failed_at.push(Instant::now());
+        }
+    }
+
+    let gap = (failed_at[1] - failed_at[0]).as_secs_f64();
+
+    assert!((gap - 5.0).abs() <= 0.5, "retry came after {gap} s, want 5");
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_abandon_radio_and_fail_verified_rows_when_connect_panics_after_start() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let mut pending = failed_out_row("unfinished");
+
+    pending.status = DeliveryStatus::Pending;
+    store.insert_message(NODE, &pending).unwrap().unwrap();
+    f.state().panic_after = Some("channels".into());
+
+    let s = spawn(&f, &store, false);
+
+    s.send(Command::Connect);
+    wait_for("failed", || matches!(s.state(), ConnState::Failed(_))).await;
+
+    assert!(called(&f, "disconnect"), "{:?}", f.state().calls);
     assert_eq!(
-        count(&f, "disconnect"),
-        1,
-        "only the first attempt's radio is abandoned"
+        status_of(&store, &dm_thread(), "unfinished"),
+        Some(DeliveryStatus::Failed)
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_abandon_radio_and_leave_rows_alone_when_connect_panics_at_start() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let mut pending = failed_out_row("unverified");
+
+    pending.status = DeliveryStatus::Pending;
+    store.insert_message(NODE, &pending).unwrap().unwrap();
+    store.insert_message(OTHER_NODE, &pending).unwrap().unwrap();
+    f.state().panic_after = Some("start".into());
+
+    let s = spawn(&f, &store, false);
+
+    s.send(Command::Connect);
+    wait_for("failed", || matches!(s.state(), ConnState::Failed(_))).await;
+
+    assert!(called(&f, "disconnect"), "{:?}", f.state().calls);
+
+    for node in [NODE, OTHER_NODE] {
+        let rows = store.messages(node, &dm_thread(), 50).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].status,
+            DeliveryStatus::Pending,
+            "node {node} row changed although the node was never verified"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_abandon_radio_and_stay_disconnected_when_cancelled_connect_panics() {
+    let f = fake();
+
+    f.state().start_delay_ms = 5000;
+    f.state().panic_after = Some("channels".into());
+
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+
+    s.send(Command::Connect);
+    wait_for("connecting", || s.state() == ConnState::Connecting).await;
+    s.send(Command::Disconnect);
+    wait_for("disconnected", || s.state() == ConnState::Disconnected).await;
+    wait_for("attempt abandoned", || called(&f, "disconnect")).await;
+
+    assert_eq!(s.state(), ConnState::Disconnected);
 }

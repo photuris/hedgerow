@@ -5,8 +5,10 @@
 //! tokio task owns the radio, the retry timers, and the ack deadlines, so
 //! nothing here needs a lock.
 
+use std::panic::AssertUnwindSafe;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::FutureExt;
 use futures::future::pending;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::{mpsc, watch};
@@ -1094,7 +1096,9 @@ impl Actor {
 /// Connect step run in its own task: open, subscribe, then read everything.
 ///
 /// Touches no store, so a cancelled attempt leaves nothing behind but its
-/// radio, which the actor drops.
+/// radio, which the actor abandons. The connection lives out here, not in
+/// the stage future, so a panic in a stage still hands it (and any verified
+/// node) back as a failure.
 async fn attempt_connect(connector: Connector, cfg: ConnectionConfig) -> Attempted {
     let radio = match open_radio(&connector, &cfg).await {
         Ok(radio) => radio,
@@ -1105,25 +1109,28 @@ async fn attempt_connect(connector: Connector, cfg: ConnectionConfig) -> Attempt
         radio,
         device: None,
     };
-    let info = match conn.radio.start().await {
-        Ok(info) => info,
-        Err(error) => {
-            return Attempted::Failed {
-                error,
-                conn: Some(conn),
-            };
-        }
-    };
+    let staged = AssertUnwindSafe(connect_stages(&mut conn))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| Err(Error::Radio("connect attempt panicked".into())));
 
-    conn.device = Some(info.clone());
-
-    match read_tables(&conn.radio, info).await {
+    match staged {
         Ok(snapshot) => Attempted::Ready { conn, snapshot },
         Err(error) => Attempted::Failed {
             error,
             conn: Some(conn),
         },
     }
+}
+
+/// Verifies the node with `start()`, recording it on `conn`, then reads the
+/// tables.
+async fn connect_stages(conn: &mut Conn) -> Result<Snapshot> {
+    let info = conn.radio.start().await?;
+
+    conn.device = Some(info.clone());
+
+    read_tables(&conn.radio, info).await
 }
 
 /// Gets a radio from the connector.
