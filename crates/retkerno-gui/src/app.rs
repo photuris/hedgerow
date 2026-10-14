@@ -14,7 +14,7 @@ use retkerno_core::store::Store;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-use crate::components::{Chat, Sidebar, Toast};
+use crate::components::{Chat, Contacts, ExportDialog, Settings, Sidebar, Toast};
 use crate::theme::{self, Theme, Watcher};
 
 /// How long a toast stays up.
@@ -56,8 +56,6 @@ pub enum SettingsTab {
     /// Transport and target.
     Connection,
     /// Device name, radio, and power.
-    // Reachable once the settings views land (task 004).
-    #[expect(dead_code)]
     Device,
     /// Channel slots.
     Channels,
@@ -77,9 +75,18 @@ pub enum View {
 }
 
 impl View {
-    /// Parses `RETKERNO_START_VIEW`: `thread:channel:<idx>` or
+    /// Parses `RETKERNO_START_VIEW`: `contacts`,
+    /// `settings:connection|device|channels`, `thread:channel:<idx>`, or
     /// `thread:contact:<prefix>`. Anything else is `None`.
     pub fn parse_start(s: &str) -> Option<View> {
+        match s {
+            "contacts" => return Some(View::Contacts),
+            "settings:connection" => return Some(View::Settings(SettingsTab::Connection)),
+            "settings:device" => return Some(View::Settings(SettingsTab::Device)),
+            "settings:channels" => return Some(View::Settings(SettingsTab::Channels)),
+            _ => {}
+        }
+
         let (kind, key) = s.strip_prefix("thread:")?.split_once(':')?;
 
         if key.is_empty() {
@@ -132,6 +139,10 @@ pub struct Ui {
     pub store: Store,
     /// The session actor.
     pub session: Session,
+    /// The configuration in force; the connection settings edit it.
+    pub config: Signal<Config>,
+    /// Whether the app runs on the demo radio (UI-test mode).
+    pub ui_test: bool,
     /// Connection state, from session updates.
     pub state: Signal<ConnState>,
     /// The node whose data is shown.
@@ -144,6 +155,10 @@ pub struct Ui {
     pub toast: Signal<Option<String>>,
     /// Current time, refreshed every [`CLOCK_TICK_SECS`].
     pub now: Signal<i64>,
+    /// The contact card to show in the export dialog, if any.
+    pub exported: Signal<Option<String>>,
+    /// Kept alive between copies: on X11 the contents die with the handle.
+    clipboard: Rc<RefCell<Option<arboard::Clipboard>>>,
     /// Identifies the latest toast, so an old timer does not clear a new one.
     toast_seq: Signal<u64>,
     /// The (thread, node) pair last marked read by opening it.
@@ -175,11 +190,15 @@ impl Ui {
         Ui {
             store: boot.store.clone(),
             session,
+            config: Signal::new(boot.config.clone()),
+            ui_test: boot.fake.is_some(),
             state: Signal::new(state),
             node: Signal::new(node),
             revision: Signal::new(0),
             view: Signal::new(view),
             toast: Signal::new(None),
+            exported: Signal::new(None),
+            clipboard: Rc::new(RefCell::new(None)),
             now: Signal::new(now_secs()),
             toast_seq: Signal::new(0),
             opened: Signal::new(None),
@@ -208,6 +227,26 @@ impl Ui {
                 toast.set(None);
             }
         });
+    }
+
+    /// Puts `text` on the system clipboard; a failure becomes a toast.
+    pub fn copy(&self, text: &str) {
+        let mut clipboard = self.clipboard.borrow_mut();
+        let result = match clipboard.as_mut() {
+            Some(held) => held.set_text(text),
+            None => arboard::Clipboard::new().and_then(|mut fresh| {
+                let result = fresh.set_text(text);
+
+                *clipboard = Some(fresh);
+
+                result
+            }),
+        };
+
+        match result {
+            Ok(()) => self.show_toast("Copied".to_string()),
+            Err(e) => self.show_toast(format!("Could not copy: {e}")),
+        }
     }
 
     /// Logs a failed store write and tells the user.
@@ -242,8 +281,11 @@ impl Ui {
                 Ok(Update::State(state)) => self.apply_state(state),
                 Ok(Update::StoreChanged) => self.bump(),
                 Ok(Update::Notice(text)) => self.show_toast(text),
-                // Consumed by the contacts view (task 004).
-                Ok(Update::Exported(_)) => {}
+                Ok(Update::Exported(uri)) => {
+                    let mut exported = self.exported;
+
+                    exported.set(Some(uri));
+                }
                 Err(RecvError::Lagged(_)) => {
                     self.sync_state();
                     self.bump();
@@ -449,8 +491,8 @@ pub fn App() -> Element {
 
             rsx! { Chat { key: "{key}", thread } }
         }
-        View::Contacts => rsx! { div { class: "placeholder", "Contacts" } },
-        View::Settings(tab) => rsx! { div { class: "placeholder", "Settings: {tab:?}" } },
+        View::Contacts => rsx! { Contacts {} },
+        View::Settings(tab) => rsx! { Settings { tab } },
     };
 
     rsx! {
@@ -462,6 +504,7 @@ pub fn App() -> Element {
             style { {theme_css()} }
             Sidebar {}
             main { {main_view} }
+            ExportDialog {}
             Toast {}
         }
     }
@@ -542,10 +585,33 @@ mod tests {
         }
 
         #[test]
+        fn should_parse_contacts() {
+            assert_eq!(View::parse_start("contacts"), Some(View::Contacts));
+        }
+
+        #[test]
+        fn should_parse_each_settings_tab() {
+            for (value, tab) in [
+                ("settings:connection", SettingsTab::Connection),
+                ("settings:device", SettingsTab::Device),
+                ("settings:channels", SettingsTab::Channels),
+            ] {
+                assert_eq!(
+                    View::parse_start(value),
+                    Some(View::Settings(tab)),
+                    "{value}"
+                );
+            }
+        }
+
+        #[test]
         fn should_ignore_unknown_values() {
             for value in [
                 "",
-                "contacts",
+                "contact",
+                "settings",
+                "settings:",
+                "settings:other",
                 "thread:",
                 "thread:channel:",
                 "thread:channel:x",

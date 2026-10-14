@@ -13,9 +13,11 @@ workspace = true
 
 [dependencies]
 retkerno-core = { path = "../retkerno-core" }
+arboard.workspace = true
 chrono.workspace = true
 dioxus.workspace = true
 dirs.workspace = true
+getrandom.workspace = true
 notify.workspace = true
 serde.workspace = true
 tokio.workspace = true
