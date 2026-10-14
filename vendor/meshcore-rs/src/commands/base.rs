@@ -210,15 +210,14 @@ impl CommandHandler {
         expected_event: Option<EventType>,
         timeout: Duration,
     ) -> Result<MeshCoreEvent> {
-        // Send the data
-        self.sender
-            .send(data.to_vec())
-            .await
-            .map_err(|e| Error::Channel(e.to_string()))?;
-
-        // Wait for response
-        self.wait_for_event(expected_event, HashMap::new(), timeout)
-            .await
+        self.send_and_wait(
+            data,
+            |event| expected_event.is_none_or(|t| event.event_type == t),
+            timeout,
+            Error::timeout(format!("{:?}", expected_event)),
+            Error::timeout(format!("{:?}", expected_event)),
+        )
+        .await
     }
 
     /// Send raw data and wait for one of multiple response types
@@ -228,14 +227,51 @@ impl CommandHandler {
         expected_events: &[EventType],
         timeout: Duration,
     ) -> Result<MeshCoreEvent> {
-        // Send the data
-        self.sender
-            .send(data.to_vec())
-            .await
-            .map_err(|e| Error::Channel(e.to_string()))?;
+        self.send_and_wait(
+            data,
+            |event| expected_events.contains(&event.event_type),
+            timeout,
+            Error::timeout("response"),
+            Error::Channel("Receiver closed".to_string()),
+        )
+        .await
+    }
 
-        // Wait for any of the expected events
-        self.wait_for_any_event(expected_events, timeout).await
+    /// Subscribe, enqueue `data`, then wait for the first event `accept`s.
+    ///
+    /// The receiver exists before the frame is enqueued, so a reply
+    /// dispatched while the enqueue is still pending is not lost. Enqueue
+    /// and wait share one `timeout`, so a full send queue cannot block
+    /// past it. `timed_out` is returned on expiry and `closed` when the
+    /// receiver fails.
+    async fn send_and_wait(
+        &self,
+        data: &[u8],
+        accept: impl Fn(&MeshCoreEvent) -> bool,
+        timeout: Duration,
+        timed_out: Error,
+        closed: Error,
+    ) -> Result<MeshCoreEvent> {
+        let mut rx = self.dispatcher.receiver();
+
+        let exchange = async {
+            self.sender
+                .send(data.to_vec())
+                .await
+                .map_err(|e| Error::Channel(e.to_string()))?;
+
+            loop {
+                match rx.recv().await {
+                    Ok(event) if accept(&event) => return Ok(event),
+                    Ok(_) => {}
+                    Err(_) => return Err(closed),
+                }
+            }
+        };
+
+        tokio::time::timeout(timeout, exchange)
+            .await
+            .unwrap_or(Err(timed_out))
     }
 
     /// Wait for a specific event

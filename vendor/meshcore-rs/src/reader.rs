@@ -338,7 +338,7 @@ impl MessageReader {
             }
 
             PacketType::ContactUri => {
-                let uri = String::from_utf8_lossy(payload).to_string();
+                let uri = format!("meshcore://{}", crate::parsing::hex_encode(payload));
                 let event = MeshCoreEvent::new(EventType::ContactUri, EventPayload::String(uri));
                 self.dispatcher.emit(event).await;
             }
@@ -1003,7 +1003,7 @@ mod tests {
         let mut receiver = dispatcher.receiver();
 
         let mut data = vec![PacketType::ContactUri as u8];
-        data.extend_from_slice(b"mod.rs://contact/abc123");
+        data.extend_from_slice(&[0x00, 0xff, 0x10]);
 
         reader.handle_rx(data).await.unwrap();
 
@@ -1014,7 +1014,7 @@ mod tests {
 
         assert_eq!(event.event_type, EventType::ContactUri);
         match event.payload {
-            EventPayload::String(s) => assert_eq!(s, "mod.rs://contact/abc123"),
+            EventPayload::String(s) => assert_eq!(s, "meshcore://00ff10"),
             _ => panic!("Expected String payload"),
         }
     }
