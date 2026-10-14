@@ -93,15 +93,24 @@ impl MeshRadio {
     /// Sends one raw frame and waits for `expected` or an `Error` event.
     ///
     /// The command lock is held only while this one command is in flight.
-    async fn command(&self, frame: &[u8], expected: EventType) -> Result<MeshCoreEvent> {
-        let event = self
-            .mc
-            .commands()
-            .lock()
-            .await
-            .send_multi(frame, &[expected, EventType::Error], COMMAND_TIMEOUT)
-            .await
-            .map_err(radio_err)?;
+    /// Lock acquisition, enqueue, and wait share one [`COMMAND_TIMEOUT`],
+    /// so a stalled link cannot block the caller past it.
+    async fn command(
+        &self,
+        operation: &str,
+        frame: &[u8],
+        expected: EventType,
+    ) -> Result<MeshCoreEvent> {
+        let event = within(operation, COMMAND_TIMEOUT, async {
+            self.mc
+                .commands()
+                .lock()
+                .await
+                .send_multi(frame, &[expected, EventType::Error], COMMAND_TIMEOUT)
+                .await
+                .map_err(radio_err)
+        })
+        .await?;
 
         if event.event_type == EventType::Error {
             return Err(rejection(&event));
@@ -111,47 +120,51 @@ impl MeshRadio {
     }
 
     /// App start, device query, and battery, merged into one report.
+    ///
+    /// Each library call gets its own [`COMMAND_TIMEOUT`].
     pub(super) async fn start(&self) -> Result<DeviceInfo> {
-        let me = self
-            .mc
-            .commands()
-            .lock()
-            .await
-            .send_appstart()
-            .await
-            .map_err(radio_err)?;
-        let query = self
-            .mc
-            .commands()
-            .lock()
-            .await
-            .send_device_query()
-            .await
-            .map_err(radio_err)?;
-        let battery = self
-            .mc
-            .commands()
-            .lock()
-            .await
-            .get_bat()
-            .await
-            .map_err(radio_err)?;
+        let me = within("start", COMMAND_TIMEOUT, async {
+            self.mc
+                .commands()
+                .lock()
+                .await
+                .send_appstart()
+                .await
+                .map_err(radio_err)
+        })
+        .await?;
+        let query = within("start", COMMAND_TIMEOUT, async {
+            self.mc
+                .commands()
+                .lock()
+                .await
+                .send_device_query()
+                .await
+                .map_err(radio_err)
+        })
+        .await?;
+        let battery = self.read_battery("start").await?;
 
         Ok(device_from_mc(&me, &query, &battery))
     }
 
     /// Reads the battery voltage in millivolts.
     pub(super) async fn battery_mv(&self) -> Result<u16> {
-        let battery = self
-            .mc
-            .commands()
-            .lock()
-            .await
-            .get_bat()
-            .await
-            .map_err(radio_err)?;
+        Ok(self.read_battery("battery").await?.battery_mv)
+    }
 
-        Ok(battery.battery_mv)
+    /// Reads the battery report under one [`COMMAND_TIMEOUT`].
+    async fn read_battery(&self, operation: &str) -> Result<BatteryInfo> {
+        within(operation, COMMAND_TIMEOUT, async {
+            self.mc
+                .commands()
+                .lock()
+                .await
+                .get_bat()
+                .await
+                .map_err(radio_err)
+        })
+        .await
     }
 
     /// Reads slots `0..max` and keeps the ones with a name.
@@ -160,7 +173,7 @@ impl MeshRadio {
 
         for idx in 0..max {
             let event = self
-                .command(&[CMD_GET_CHANNEL, idx], EventType::ChannelInfo)
+                .command("channels", &[CMD_GET_CHANNEL, idx], EventType::ChannelInfo)
                 .await?;
             let EventPayload::ChannelInfo(info) = event.payload else {
                 return Err(Error::Radio(format!("unexpected reply for channel {idx}")));
@@ -184,26 +197,32 @@ impl MeshRadio {
     pub(super) async fn set_channel(&self, ch: &Channel) -> Result<()> {
         let frame = set_channel_frame(ch.idx, &ch.name, &ch.secret)?;
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("set_channel", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Empties a slot: empty name and zero secret.
     pub(super) async fn clear_channel(&self, idx: u8) -> Result<()> {
         let frame = set_channel_frame(idx, "", &[0; 16])?;
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("clear_channel", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Reads contacts modified after `since`.
     pub(super) async fn contacts(&self, since: u32) -> Result<Vec<Contact>> {
-        let contacts = self
-            .mc
-            .commands()
-            .lock()
-            .await
-            .get_contacts_with_timeout(since, CONTACTS_TIMEOUT)
-            .await
-            .map_err(radio_err)?;
+        let contacts = within("contacts", CONTACTS_TIMEOUT, async {
+            self.mc
+                .commands()
+                .lock()
+                .await
+                .get_contacts_with_timeout(since, CONTACTS_TIMEOUT)
+                .await
+                .map_err(radio_err)
+        })
+        .await?;
 
         Ok(contacts.iter().map(contact_from_mc).collect())
     }
@@ -212,21 +231,27 @@ impl MeshRadio {
     pub(super) async fn remove_contact(&self, public_key: &str) -> Result<()> {
         let frame = key_frame(CMD_REMOVE_CONTACT, public_key)?;
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("remove_contact", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Forgets the learned route to a contact.
     pub(super) async fn reset_path(&self, public_key: &str) -> Result<()> {
         let frame = key_frame(CMD_RESET_PATH, public_key)?;
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("reset_path", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Imports a contact card.
     pub(super) async fn import_contact(&self, card: &[u8]) -> Result<()> {
         let frame = [&[CMD_IMPORT_CONTACT][..], card].concat();
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("import_contact", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Exports a contact card URI; `None` exports the radio itself.
@@ -235,7 +260,9 @@ impl MeshRadio {
             Some(key) => key_frame(CMD_EXPORT_CONTACT, key)?,
             None => vec![CMD_EXPORT_CONTACT],
         };
-        let event = self.command(&frame, EventType::ContactUri).await?;
+        let event = self
+            .command("export_contact", &frame, EventType::ContactUri)
+            .await?;
 
         match event.payload {
             EventPayload::String(uri) => Ok(uri),
@@ -246,7 +273,9 @@ impl MeshRadio {
     /// Sends a direct message and returns the ack tag to wait for.
     pub(super) async fn send_text(&self, prefix: &str, text: &str, ts: u32) -> Result<SentInfo> {
         let frame = dm_frame(prefix, text, ts)?;
-        let event = self.command(&frame, EventType::MsgSent).await?;
+        let event = self
+            .command("send_text", &frame, EventType::MsgSent)
+            .await?;
 
         match event.payload {
             EventPayload::MsgSent(info) => Ok(SentInfo {
@@ -261,19 +290,23 @@ impl MeshRadio {
     pub(super) async fn send_channel_text(&self, idx: u8, text: &str, ts: u32) -> Result<()> {
         let frame = channel_text_frame(idx, text, ts);
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("send_channel_text", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Pops the next queued message.
     pub(super) async fn next_message(&self) -> Result<Option<IncomingMessage>> {
-        let event = self
-            .mc
-            .commands()
-            .lock()
-            .await
-            .get_msg_with_timeout(COMMAND_TIMEOUT)
-            .await
-            .map_err(radio_err)?;
+        let event = within("next_message", COMMAND_TIMEOUT, async {
+            self.mc
+                .commands()
+                .lock()
+                .await
+                .get_msg_with_timeout(COMMAND_TIMEOUT)
+                .await
+                .map_err(radio_err)
+        })
+        .await?;
 
         Ok(event.and_then(|e| match e.payload {
             EventPayload::ContactMessage(m) => Some(incoming_from_contact_msg(&m)),
@@ -290,14 +323,18 @@ impl MeshRadio {
             vec![CMD_SEND_ADVERT]
         };
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("send_advert", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Sets the device clock.
     pub(super) async fn sync_clock(&self, now: u32) -> Result<()> {
         let frame = [&[CMD_SET_TIME][..], &now.to_le_bytes()].concat();
 
-        self.command(&frame, EventType::Ok).await.map(drop)
+        self.command("sync_clock", &frame, EventType::Ok)
+            .await
+            .map(drop)
     }
 
     /// Validates `s`, then sends each changed settings group in order.
@@ -309,7 +346,8 @@ impl MeshRadio {
         s.validate(current)?;
 
         for frame in s.frames(current) {
-            self.command(&frame, EventType::Ok).await?;
+            self.command("apply_settings", &frame, EventType::Ok)
+                .await?;
         }
 
         Ok(())
@@ -399,6 +437,17 @@ fn lag_events(connected: bool) -> Vec<RadioEvent> {
 }
 
 // ── Frames and errors ───────────────────────────────────────────────────────
+
+/// Runs `work` under one deadline; expiry is an unknown outcome.
+async fn within<T>(
+    operation: &str,
+    limit: Duration,
+    work: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(limit, work)
+        .await
+        .unwrap_or_else(|_| Err(Error::Radio(format!("timed out: {operation}"))))
+}
 
 /// Wraps a library error: the outcome of the command is unknown.
 fn radio_err(e: meshcore_rs::Error) -> Error {
