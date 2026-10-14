@@ -1,0 +1,44 @@
+allow = ["expect", "capacity", "format", "async_resumed"]
+[[rules]]
+function = "meshcore_rs::parsing::parse_contact"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_device_info"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_status"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_contact_msg"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_contact_msg_v3"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_channel_msg"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_channel_msg_v3"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::read_u16_le"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::read_u16_le"
+allow = ["overflow"]
+
+[[rules]]
+function = "meshcore_rs::parsing::read_i16_le"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::read_i16_le"
+allow = ["overflow"]
