@@ -2,11 +2,11 @@
 
 use dioxus::prelude::*;
 use retkerno_core::model::Channel;
-use retkerno_core::session::{Command, ConnState};
+use retkerno_core::session::{Command, ConnState, Guard};
 use retkerno_core::text::{self, PUBLIC_CHANNEL_SECRET, hashtag_secret};
 
 use super::device::current_device;
-use crate::app::Ui;
+use crate::app::{Ui, connected_node};
 use crate::components::confirm::{Confirm, Pending, use_pending};
 
 /// Most bytes a channel name can use.
@@ -222,7 +222,14 @@ pub fn Channels() -> Element {
                         removing.set(None);
 
                         if pending.is_current(&ui.state.peek()) && slot_holds(&ui, &pending) {
-                            ui.session.send(Command::ClearChannel(pending.action.idx));
+                            pending.send(
+                                &ui,
+                                Guard::ChannelSlot {
+                                    idx: pending.action.idx,
+                                    secret: Some(pending.action.secret),
+                                },
+                                Command::ClearChannel(pending.action.idx),
+                            );
                         }
                     }
                 },
@@ -253,15 +260,31 @@ fn AddChannel(channels: Vec<Channel>, max: u8, connected: bool) -> Element {
     let add = {
         let ui = ui.clone();
         let channels = channels.clone();
+        // The radio this form was drawn for; the session refuses the write
+        // if it, or the chosen slot, changed since.
+        let node = connected_node(&(ui.state)());
 
-        move |_| match build_channel(kind(), &name(), &key(), &channels, max) {
-            Ok(channel) => {
-                error.set(None);
-                name.set(String::new());
-                key.set(String::new());
-                ui.session.send(Command::SetChannel(channel));
+        move |_| {
+            let Some(node) = &node else {
+                return;
+            };
+
+            match build_channel(kind(), &name(), &key(), &channels, max) {
+                Ok(channel) => {
+                    error.set(None);
+                    name.set(String::new());
+                    key.set(String::new());
+                    ui.send_guarded(
+                        node,
+                        Guard::ChannelSlot {
+                            idx: channel.idx,
+                            secret: None,
+                        },
+                        Command::SetChannel(channel),
+                    );
+                }
+                Err(e) => error.set(Some(e)),
             }
-            Err(e) => error.set(Some(e)),
         }
     };
 

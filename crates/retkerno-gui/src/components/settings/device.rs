@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use retkerno_core::Error;
 use retkerno_core::model::DeviceInfo;
 use retkerno_core::radio::DeviceSettings;
-use retkerno_core::session::{Command, ConnState};
+use retkerno_core::session::{Command, ConnState, Guard};
 
 use crate::app::Ui;
 use crate::components::confirm::{Confirm, Pending, use_pending};
@@ -159,6 +159,9 @@ struct ApplyPlan {
     wanted: DeviceSettings,
     /// The device settings `lines` is the diff against.
     from: DeviceSettings,
+    /// The device report `from` was taken from, untouched, for the
+    /// session's check that the radio still has these settings.
+    snapshot: DeviceSettings,
     /// The confirmation text.
     lines: Vec<String>,
 }
@@ -307,9 +310,9 @@ fn DeviceView(info: DeviceInfo) -> Element {
         (version, _) => unknown(version),
     };
     let command = |command: Command| {
-        let session = ui.session.clone();
+        let (ui, node) = (ui.clone(), info.node_id.clone());
 
-        move |_| session.send(command.clone())
+        move |_| ui.send_guarded(&node, Guard::Node, command.clone())
     };
     let apply = {
         let ui = ui.clone();
@@ -335,6 +338,7 @@ fn DeviceView(info: DeviceInfo) -> Element {
                 ApplyPlan {
                     wanted,
                     from,
+                    snapshot: DeviceSettings::from_device(&device),
                     lines,
                 },
             ));
@@ -522,7 +526,11 @@ fn DeviceView(info: DeviceInfo) -> Element {
                         if settings_of(&device) == plan.action.from
                             && plan.action.wanted.validate(&device).is_ok()
                         {
-                            ui.session.send(Command::ApplySettings(plan.action.wanted.clone()));
+                            plan.send(
+                                &ui,
+                                Guard::Device(plan.action.snapshot.clone()),
+                                Command::ApplySettings(plan.action.wanted.clone()),
+                            );
                         }
                     }
                 },

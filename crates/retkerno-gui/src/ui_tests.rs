@@ -955,3 +955,252 @@ async fn whitespace_name_has_no_empty_confirmation() {
         "the trimmed name is unchanged, so Apply must stay disabled"
     );
 }
+
+// ── 008: commands guarded by the session ────────────────────────────────────
+
+/// Waits, in real time, until `predicate` holds for the session's state.
+async fn wait_session(ui: &Ui, predicate: impl Fn(&ConnState) -> bool) {
+    for _ in 0..100 {
+        if predicate(&ui.session.state()) {
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    panic!(
+        "session did not reach the requested state: {:?}",
+        ui.session.state()
+    );
+}
+
+/// The title of the open chat.
+fn chat_title(dom: &VirtualDom) -> String {
+    els(dom)
+        .into_iter()
+        .find(|e| e.has_class("chat-title"))
+        .unwrap()
+        .text
+}
+
+#[tokio::test]
+async fn confirmation_rechecks_session_before_ui_consumes_updates() {
+    let (mut dom, ui, fake) = setup("settings:channels").await;
+
+    click(&dom, &button(&dom, "Remove", false));
+    settle(&mut dom).await;
+
+    let confirm = button(&dom, "Remove", true);
+    let original_node = device(&ui).node_id;
+
+    ui.session.send(Command::Disconnect);
+    wait_session(&ui, |s| *s == ConnState::Disconnected).await;
+
+    {
+        let mut radio = fake.state();
+
+        radio.device.node_id = other_node();
+        radio.channels[0].secret = [7; 16];
+        radio.channels[0].name = "Other channel".into();
+    }
+
+    ui.session.send(Command::Connect);
+    wait_session(
+        &ui,
+        |s| matches!(s, ConnState::Connected(d) if d.node_id == other_node()),
+    )
+    .await;
+
+    // The session has switched radios; the UI's update future has not run.
+    assert_eq!(device(&ui).node_id, original_node);
+
+    click(&dom, &confirm);
+    settle(&mut dom).await;
+
+    assert!(
+        fake.state().channels.iter().any(|c| c.idx == 0),
+        "an old confirmation cleared a channel on another radio: {:?}",
+        fake.state().calls
+    );
+}
+
+#[tokio::test]
+async fn settings_plan_rechecks_actor_before_ui_consumes_updates() {
+    let (mut dom, ui, fake) = setup("settings:device").await;
+
+    type_in(&dom, "dev-power", "18");
+    dom.render_immediate_to_vec();
+    click(&dom, &button(&dom, "Apply", false));
+    settle(&mut dom).await;
+
+    let confirm = button(&dom, "Apply", true);
+
+    assert!(page_text(&dom).contains("TX power: 20 dBm → 18 dBm"));
+
+    fake.state().device.radio_freq = 915_000;
+    ui.session.send(Command::Refresh);
+    wait_session(
+        &ui,
+        |s| matches!(s, ConnState::Connected(d) if d.radio_freq == 915_000),
+    )
+    .await;
+
+    assert_eq!(
+        device(&ui).radio_freq,
+        910_525,
+        "the UI consumed the update"
+    );
+
+    click(&dom, &confirm);
+    settle(&mut dom).await;
+
+    assert_eq!(
+        fake.state().device.radio_freq,
+        915_000,
+        "a TX-power-only dialog reset the frequency the UI had not yet seen"
+    );
+}
+
+#[tokio::test]
+async fn import_does_not_cross_nodes() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+
+    click(&dom, &button(&dom, "Import…", false));
+    settle(&mut dom).await;
+
+    let textarea = els(&dom)
+        .into_iter()
+        .find(|e| e.tag == "textarea" && e.dialog)
+        .unwrap();
+
+    // A minimal contact card: type 2, a 32-byte key, and a name.
+    type_into(
+        &dom,
+        &textarea,
+        &format!("meshcore://02{}{}", "77".repeat(32), "526576696577"),
+    );
+    settle(&mut dom).await;
+
+    ui.session.send(Command::Disconnect);
+    settle(&mut dom).await;
+    fake.state().device.node_id = other_node();
+    ui.session.send(Command::Connect);
+    settle(&mut dom).await;
+    assert_eq!(device(&ui).node_id, other_node());
+
+    if dialog_has_button(&dom, "Import") {
+        click(&dom, &button(&dom, "Import", true));
+        settle(&mut dom).await;
+    }
+
+    assert!(
+        !fake.state().calls.iter().any(|c| c == "import_contact"),
+        "an import opened for the first radio reached the second: {:?}",
+        fake.state().calls
+    );
+}
+
+#[tokio::test]
+async fn chat_draft_does_not_cross_nodes() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+
+    open_composer(&mut dom, &ui).await;
+    type_into(
+        &dom,
+        &first_tag(&dom, "textarea"),
+        "private draft for first radio",
+    );
+    settle(&mut dom).await;
+
+    ui.session.send(Command::Disconnect);
+    settle(&mut dom).await;
+
+    {
+        let mut radio = fake.state();
+
+        radio.device.node_id = other_node();
+        radio.channels[0].name = "Other radio channel".into();
+        radio.channels[0].secret = [7; 16];
+    }
+
+    ui.session.send(Command::Connect);
+    settle(&mut dom).await;
+    assert_eq!(device(&ui).node_id, other_node());
+    assert_eq!(chat_title(&dom), "Other radio channel");
+
+    press_enter(&dom, &first_tag(&dom, "textarea"));
+    settle(&mut dom).await;
+
+    assert!(
+        sent_channel_texts(&fake).is_empty(),
+        "a draft for the first radio was sent on the second: {:?}",
+        fake.state().sent
+    );
+}
+
+#[tokio::test]
+async fn chat_draft_does_not_cross_channels_in_one_slot() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+
+    open_composer(&mut dom, &ui).await;
+    type_into(
+        &dom,
+        &first_tag(&dom, "textarea"),
+        "draft for the public channel",
+    );
+    settle(&mut dom).await;
+
+    {
+        let mut radio = fake.state();
+
+        radio.channels[0].name = "Replacement".into();
+        radio.channels[0].secret = [7; 16];
+    }
+
+    ui.session.send(Command::Refresh);
+    settle(&mut dom).await;
+    assert_eq!(chat_title(&dom), "Replacement");
+
+    press_enter(&dom, &first_tag(&dom, "textarea"));
+    settle(&mut dom).await;
+
+    assert!(
+        sent_channel_texts(&fake).is_empty(),
+        "a draft typed for one channel was sent to its replacement: {:?}",
+        fake.state().sent
+    );
+}
+
+#[tokio::test]
+async fn chat_send_is_refused_when_slot_changed_before_ui_consumes_updates() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let textarea = open_composer(&mut dom, &ui).await;
+
+    type_into(&dom, &textarea, "draft for the public channel");
+    settle(&mut dom).await;
+
+    fake.state().channels[0].secret = [7; 16];
+    ui.session.send(Command::Refresh);
+
+    // The session stores the new channel before it publishes anything; the
+    // UI's update future has not run.
+    for _ in 0..100 {
+        let stored = ui.store.channels(&node).unwrap();
+
+        if stored.iter().any(|c| c.idx == 0 && c.secret == [7; 16]) {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    press_enter(&dom, &textarea);
+    settle(&mut dom).await;
+
+    assert!(
+        sent_channel_texts(&fake).is_empty(),
+        "a draft was sent to a channel that replaced the one it was typed for: {:?}",
+        fake.state().sent
+    );
+}

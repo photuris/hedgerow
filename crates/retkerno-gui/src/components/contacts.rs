@@ -3,10 +3,10 @@
 
 use dioxus::prelude::*;
 use retkerno_core::model::{Contact, ContactKind, ThreadId};
-use retkerno_core::session::{Command, ConnState};
+use retkerno_core::session::{Command, Guard};
 
 use super::confirm::{Confirm, Modal, Pending, use_pending};
-use crate::app::Ui;
+use crate::app::{Ui, connected_node};
 use crate::format;
 
 /// The filter chips, in display order.
@@ -51,7 +51,7 @@ pub fn Contacts() -> Element {
     let ui = use_context::<Ui>();
     let mut query = use_signal(String::new);
     let mut kind = use_signal(|| None::<ContactKind>);
-    let mut importing = use_signal(|| false);
+    let mut importing = use_pending::<()>();
     let mut removing = use_pending::<Contact>();
     let contacts = use_memo({
         let ui = ui.clone();
@@ -68,15 +68,22 @@ pub fn Contacts() -> Element {
             }
         }
     });
-    let connected = matches!((ui.state)(), ConnState::Connected(_));
+    // The radio these buttons were drawn for; the session refuses a command
+    // whose radio has changed since.
+    let node = connected_node(&(ui.state)());
+    let connected = node.is_some();
     let title = needs_connection(connected);
     let all = contacts();
     let visible = filter_contacts(&all, &query(), kind());
     let now = (ui.now)();
     let send = |command: Command| {
-        let session = ui.session.clone();
+        let (ui, node) = (ui.clone(), node.clone());
 
-        move |_| session.send(command.clone())
+        move |_| {
+            if let Some(node) = &node {
+                ui.send_guarded(node, Guard::Node, command.clone());
+            }
+        }
     };
 
     rsx! {
@@ -102,7 +109,11 @@ pub fn Contacts() -> Element {
                 button {
                     disabled: !connected,
                     title,
-                    onclick: move |_| importing.set(true),
+                    onclick: {
+                        let ui = ui.clone();
+
+                        move |_| importing.set(Pending::open(&ui, ()))
+                    },
                     "Import…"
                 }
                 button {
@@ -141,7 +152,7 @@ pub fn Contacts() -> Element {
                         key: "{contact.public_key}",
                         contact,
                         now,
-                        connected,
+                        node: node.clone(),
                         onremove: {
                             let ui = ui.clone();
 
@@ -150,8 +161,8 @@ pub fn Contacts() -> Element {
                     }
                 }
             }
-            if importing() {
-                ImportDialog { onclose: move |_| importing.set(false) }
+            if let Some(pending) = importing() {
+                ImportDialog { pending, onclose: move |_| importing.set(None) }
             }
             if let Some(pending) = removing() {
                 Confirm {
@@ -166,7 +177,11 @@ pub fn Contacts() -> Element {
                             removing.set(None);
 
                             if pending.is_current(&ui.state.peek()) {
-                                ui.session.send(Command::RemoveContact(pending.action.public_key.clone()));
+                                pending.send(
+                                    &ui,
+                                    Guard::Node,
+                                    Command::RemoveContact(pending.action.public_key.clone()),
+                                );
                             }
                         }
                     },
@@ -182,10 +197,11 @@ pub fn Contacts() -> Element {
 fn ContactRow(
     contact: Contact,
     now: i64,
-    connected: bool,
+    node: Option<String>,
     onremove: EventHandler<Contact>,
 ) -> Element {
     let ui = use_context::<Ui>();
+    let connected = node.is_some();
     let title = needs_connection(connected);
     let heard = match contact.last_advert {
         0 => "never".to_string(),
@@ -196,7 +212,8 @@ fn ContactRow(
         contact.public_key.clone(),
         contact.public_key.clone(),
     );
-    let (session_share, session_reset) = (ui.session.clone(), ui.session.clone());
+    let (ui_share, ui_reset) = (ui.clone(), ui.clone());
+    let (node_share, node_reset) = (node.clone(), node);
     let removed = contact.clone();
 
     rsx! {
@@ -218,13 +235,21 @@ fn ContactRow(
                 button {
                     disabled: !connected,
                     title,
-                    onclick: move |_| session_share.send(Command::ExportContact(Some(key.clone()))),
+                    onclick: move |_| {
+                        if let Some(node) = &node_share {
+                            ui_share.send_guarded(node, Guard::Node, Command::ExportContact(Some(key.clone())));
+                        }
+                    },
                     "Share"
                 }
                 button {
                     disabled: !connected || contact.path_len == -1,
                     title,
-                    onclick: move |_| session_reset.send(Command::ResetPath(reset_key.clone())),
+                    onclick: move |_| {
+                        if let Some(node) = &node_reset {
+                            ui_reset.send_guarded(node, Guard::Node, Command::ResetPath(reset_key.clone()));
+                        }
+                    },
                     "Reset path"
                 }
                 button {
@@ -239,12 +264,13 @@ fn ContactRow(
     }
 }
 
-/// Asks for a `meshcore://` card and sends it; the session validates it.
+/// Asks for a `meshcore://` card and sends it to the radio it was opened
+/// on; the session validates the card.
 #[component]
-fn ImportDialog(onclose: EventHandler<()>) -> Element {
+fn ImportDialog(pending: Pending<()>, onclose: EventHandler<()>) -> Element {
     let ui = use_context::<Ui>();
     let mut text = use_signal(String::new);
-    let connected = matches!((ui.state)(), ConnState::Connected(_));
+    let connected = pending.is_current(&(ui.state)());
     let ready = connected && !text().trim().is_empty();
 
     rsx! {
@@ -269,7 +295,10 @@ fn ImportDialog(onclose: EventHandler<()>) -> Element {
                     disabled: !ready,
                     title: needs_connection(connected),
                     onclick: move |_| {
-                        ui.session.send(Command::ImportContact(text()));
+                        if pending.is_current(&ui.state.peek()) {
+                            pending.send(&ui, Guard::Node, Command::ImportContact(text.peek().clone()));
+                        }
+
                         onclose.call(());
                     },
                     "Import"

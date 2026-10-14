@@ -107,6 +107,37 @@ pub enum Command {
     ApplySettings(DeviceSettings),
     /// Re-run the sync step without reconnecting.
     Refresh,
+    /// Run `cmd` only if the connected radio is still `node` and `guard`
+    /// still holds when the actor gets to it.
+    ///
+    /// The GUI prepares an action against what it last saw, and the session
+    /// may have moved on by the time the command runs. A refused command
+    /// reaches neither the radio nor the store. `cmd` must not be
+    /// `Guarded` itself.
+    Guarded {
+        /// The node id the action was prepared for.
+        node: String,
+        /// What else must still be true.
+        guard: Guard,
+        /// The command to run.
+        cmd: Box<Command>,
+    },
+}
+
+/// What must still be true when a guarded command runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Guard {
+    /// Only the connected node must match.
+    Node,
+    /// Slot `idx` must hold a channel with this secret (`Some`), or be empty (`None`).
+    ChannelSlot {
+        /// The channel slot.
+        idx: u8,
+        /// The secret of the expected occupant; `None` for an empty slot.
+        secret: Option<[u8; 16]>,
+    },
+    /// `DeviceSettings::from_device(current device)` must equal this snapshot.
+    Device(DeviceSettings),
 }
 
 /// What the session tells the GUI.
@@ -700,7 +731,50 @@ impl Actor {
                 self.report("Apply settings", result);
             }
             Command::Refresh => self.refresh().await,
+            Command::Guarded { node, guard, cmd } => self.guarded(&node, &guard, *cmd).await,
         }
+    }
+
+    /// `Guarded`: run `cmd` as if sent bare, unless the radio moved on.
+    async fn guarded(&mut self, node: &str, guard: &Guard, cmd: Command) {
+        if matches!(cmd, Command::Guarded { .. }) {
+            self.notice("Invalid command");
+
+            return;
+        }
+
+        match self.guard_holds(node, guard) {
+            Ok(true) => Box::pin(self.handle(cmd)).await,
+            Ok(false) => self.notice("The radio changed; action cancelled"),
+            Err(e) => self.fail("Guarded action", &e),
+        }
+    }
+
+    /// Whether the held connection is `node` and `guard` is satisfied.
+    ///
+    /// Channel occupants come from the store, which is written before any
+    /// later command runs; the device report comes from the actor.
+    fn guard_holds(&self, node: &str, guard: &Guard) -> Result<bool> {
+        let device = self.device()?;
+
+        if device.node_id != node {
+            return Ok(false);
+        }
+
+        Ok(match guard {
+            Guard::Node => true,
+            Guard::ChannelSlot { idx, secret } => {
+                let held = self
+                    .store
+                    .channels(node)?
+                    .into_iter()
+                    .find(|c| c.idx == *idx)
+                    .map(|c| c.secret);
+
+                held == *secret
+            }
+            Guard::Device(snapshot) => DeviceSettings::from_device(device) == *snapshot,
+        })
     }
 
     /// Turns a command error into a notice; the connection stays up.

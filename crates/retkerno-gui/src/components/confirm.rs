@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 use retkerno_core::model::DeviceInfo;
-use retkerno_core::session::ConnState;
+use retkerno_core::session::{Command, ConnState, Guard};
 
 use crate::app::{Ui, connected_node};
 
@@ -25,6 +25,12 @@ impl<T> Pending<T> {
     /// Whether `state` is a connection to the radio this was opened on.
     pub fn is_current(&self, state: &ConnState) -> bool {
         connected_node(state).is_some_and(|node| node == self.node)
+    }
+
+    /// Sends `cmd` to the session, which runs it only while it is still
+    /// connected to this dialog's radio and `guard` holds.
+    pub fn send(&self, ui: &Ui, guard: Guard, cmd: Command) {
+        ui.send_guarded(&self.node, guard, cmd);
     }
 
     /// The current device, if the session is connected to this dialog's radio.

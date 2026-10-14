@@ -11,7 +11,7 @@ use retkerno_core::model::{
     Channel, Contact, ContactKind, DeliveryStatus, DeviceInfo, Direction, NewMessage, ThreadId,
 };
 use retkerno_core::radio::{DeviceSettings, FakeFailure, FakeRadio, FakeSent, RadioEvent};
-use retkerno_core::session::{Command, ConnState, Connector, Session, Update};
+use retkerno_core::session::{Command, ConnState, Connector, Guard, Session, Update};
 use retkerno_core::store::Store;
 use retkerno_core::text;
 use tokio::sync::broadcast::Receiver;
@@ -820,4 +820,223 @@ async fn should_abandon_radio_and_stay_disconnected_when_cancelled_connect_panic
     wait_for("attempt abandoned", || called(&f, "disconnect")).await;
 
     assert_eq!(s.state(), ConnState::Disconnected);
+}
+
+fn guarded(node: &str, guard: Guard, cmd: Command) -> Command {
+    Command::Guarded {
+        node: node.to_string(),
+        guard,
+        cmd: Box::new(cmd),
+    }
+}
+
+fn hashtag_channel(idx: u8, name: &str) -> Channel {
+    Channel {
+        idx,
+        name: name.into(),
+        secret: text::hashtag_secret(name).unwrap(),
+    }
+}
+
+const CANCELLED: &str = "The radio changed; action cancelled";
+
+#[tokio::test(start_paused = true)]
+async fn should_refuse_guarded_command_when_node_differs() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let mut rx = s.subscribe();
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(OTHER_NODE, Guard::Node, Command::ClearChannel(3)));
+    wait_notice(&mut rx, CANCELLED).await;
+
+    assert!(!called(&f, "clear_channel"), "{:?}", f.state().calls);
+    assert_eq!(store.channels(NODE).unwrap().len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_refuse_clear_channel_when_slot_holds_another_secret() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let mut rx = s.subscribe();
+    let guard = Guard::ChannelSlot {
+        idx: 3,
+        secret: Some([9; 16]),
+    };
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(NODE, guard, Command::ClearChannel(3)));
+    wait_notice(&mut rx, CANCELLED).await;
+
+    assert!(!called(&f, "clear_channel"), "{:?}", f.state().calls);
+    assert_eq!(store.channels(NODE).unwrap().len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_clear_channel_when_slot_holds_the_guarded_secret() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let guard = Guard::ChannelSlot {
+        idx: 3,
+        secret: Some(text::hashtag_secret("#test").unwrap()),
+    };
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(NODE, guard, Command::ClearChannel(3)));
+    wait_for("cleared", || called(&f, "clear_channel:3")).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_refuse_set_channel_into_occupied_slot_when_guard_expects_empty() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let mut rx = s.subscribe();
+    let guard = Guard::ChannelSlot {
+        idx: 3,
+        secret: None,
+    };
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(
+        NODE,
+        guard,
+        Command::SetChannel(hashtag_channel(3, "#new")),
+    ));
+    wait_notice(&mut rx, CANCELLED).await;
+
+    assert!(!called(&f, "set_channel"), "{:?}", f.state().calls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_set_channel_into_empty_slot_when_guard_expects_empty() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let guard = Guard::ChannelSlot {
+        idx: 7,
+        secret: None,
+    };
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(
+        NODE,
+        guard,
+        Command::SetChannel(hashtag_channel(7, "#new")),
+    ));
+    wait_for("channel stored", || {
+        store.channels(NODE).unwrap().iter().any(|c| c.idx == 7)
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_refuse_apply_settings_when_device_snapshot_differs() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let mut rx = s.subscribe();
+    let mut snapshot = DeviceSettings::from_device(&device());
+    let mut wanted = snapshot.clone();
+
+    snapshot.radio_freq = 915_000;
+    wanted.name = "Renamed".into();
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(
+        NODE,
+        Guard::Device(snapshot),
+        Command::ApplySettings(wanted),
+    ));
+    wait_notice(&mut rx, CANCELLED).await;
+
+    assert!(f.state().frames.is_empty(), "{:?}", f.state().frames);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_apply_settings_when_device_snapshot_matches() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let snapshot = DeviceSettings::from_device(&device());
+    let mut wanted = snapshot.clone();
+
+    wanted.name = "Renamed".into();
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(
+        NODE,
+        Guard::Device(snapshot),
+        Command::ApplySettings(wanted),
+    ));
+    wait_for(
+        "settings applied",
+        || matches!(s.state(), ConnState::Connected(d) if d.name == "Renamed"),
+    )
+    .await;
+
+    assert!(!f.state().frames.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_send_text_when_node_guard_matches() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+
+    wait_for("connected", || connected(&s)).await;
+    s.send(guarded(
+        NODE,
+        Guard::Node,
+        Command::SendText {
+            thread: dm_thread(),
+            text: "guarded hello".into(),
+        },
+    ));
+    wait_for("dm sent", || {
+        status_of(&store, &dm_thread(), "guarded hello") == Some(DeliveryStatus::Sent)
+    })
+    .await;
+
+    assert!(matches!(
+        f.state().sent.last(),
+        Some(FakeSent::Text { text, .. }) if text == "guarded hello"
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_notice_not_connected_when_guarded_command_arrives_disconnected() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+    let mut rx = s.subscribe();
+
+    s.send(guarded(NODE, Guard::Node, Command::SyncClock));
+    wait_notice(&mut rx, "Not connected").await;
+
+    assert!(f.state().calls.is_empty(), "{:?}", f.state().calls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_refuse_guarded_command_nested_in_a_guarded_command() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let mut rx = s.subscribe();
+
+    wait_for("connected", || connected(&s)).await;
+
+    let calls_before = f.state().calls.len();
+
+    s.send(guarded(
+        NODE,
+        Guard::Node,
+        guarded(NODE, Guard::Node, Command::SyncClock),
+    ));
+    wait_notice(&mut rx, "Invalid command").await;
+
+    assert_eq!(f.state().calls.len(), calls_before);
 }

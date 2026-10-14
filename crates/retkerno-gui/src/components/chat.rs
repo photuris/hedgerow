@@ -3,7 +3,7 @@
 use chrono::NaiveDate;
 use dioxus::prelude::*;
 use retkerno_core::model::{DeliveryStatus, Direction, Message, ThreadId};
-use retkerno_core::session::Command;
+use retkerno_core::session::{Command, Guard};
 use retkerno_core::store::Store;
 
 use super::composer::Composer;
@@ -81,9 +81,11 @@ fn with_day_labels(messages: &[Message], now: i64) -> Vec<(Message, Option<Strin
         .collect()
 }
 
-/// The chat view of one thread. Mount it with a key per thread.
+/// The chat view of one thread on `node`. `secret` is what the thread's
+/// channel slot held when it opened. Mount it with a key that changes with
+/// the node, the thread, and that secret: the draft belongs to them.
 #[component]
-pub fn Chat(thread: ThreadId) -> Element {
+pub fn Chat(thread: ThreadId, node: Option<String>, secret: Option<[u8; 16]>) -> Element {
     let ui = use_context::<Ui>();
     let header = use_memo({
         let (ui, thread) = (ui.clone(), thread.clone());
@@ -179,17 +181,22 @@ pub fn Chat(thread: ThreadId) -> Element {
                     div { class: "msgs-empty", "No messages yet" }
                 }
                 for (message , day) in items {
-                    Bubble { key: "{message.id}", message, day, is_channel }
+                    Bubble { key: "{message.id}", message, day, is_channel, node: node.clone() }
                 }
             }
-            Composer { thread: thread.clone() }
+            Composer { thread: thread.clone(), node: node.clone(), secret }
         }
     }
 }
 
 /// One message bubble, with the day separator above it when it starts a day.
 #[component]
-fn Bubble(message: Message, day: Option<String>, is_channel: bool) -> Element {
+fn Bubble(
+    message: Message,
+    day: Option<String>,
+    is_channel: bool,
+    node: Option<String>,
+) -> Element {
     let ui = use_context::<Ui>();
     let outgoing = message.direction == Direction::Out;
     let sender = (is_channel && !outgoing)
@@ -219,7 +226,14 @@ fn Bubble(message: Message, day: Option<String>, is_channel: bool) -> Element {
                     span { class: if failed { "failed" } else { "" }, "{glyph}" }
                 }
                 if failed {
-                    button { onclick: move |_| ui.session.send(Command::Retry { message_id: id }), "Retry" }
+                    button {
+                        onclick: move |_| {
+                            if let Some(node) = &node {
+                                ui.send_guarded(node, Guard::Node, Command::Retry { message_id: id });
+                            }
+                        },
+                        "Retry"
+                    }
                 }
             }
         }

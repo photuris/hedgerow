@@ -9,8 +9,9 @@ use dioxus::prelude::*;
 use retkerno_core::config::Config;
 use retkerno_core::model::ThreadId;
 use retkerno_core::radio::FakeRadio;
-use retkerno_core::session::{ConnState, Connector, Session, Update};
+use retkerno_core::session::{Command, ConnState, Connector, Guard, Session, Update};
 use retkerno_core::store::Store;
+use retkerno_core::text;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -124,6 +125,52 @@ pub fn connected_node(state: &ConnState) -> Option<String> {
     match state {
         ConnState::Connected(device) => Some(device.node_id.clone()),
         _ => None,
+    }
+}
+
+/// What a mounted [`Chat`] belongs to: its node and, for a channel thread,
+/// the secret of the slot's occupant when the chat was opened.
+#[derive(Clone, Debug, PartialEq)]
+struct ChatTarget {
+    /// The open thread.
+    thread: ThreadId,
+    /// The node whose data the chat shows.
+    node: Option<String>,
+    /// The secret held by the thread's channel slot; `None` for a contact
+    /// thread or an empty slot.
+    secret: Option<[u8; 16]>,
+}
+
+impl ChatTarget {
+    /// Reads the target of `thread` on `node` from the store.
+    fn of(store: &Store, node: Option<String>, thread: ThreadId) -> ChatTarget {
+        let secret = match (&thread, &node) {
+            (ThreadId::Channel(idx), Some(node)) => store
+                .channels(node)
+                .unwrap_or_default()
+                .iter()
+                .find(|c| c.idx == *idx)
+                .map(|c| c.secret),
+            _ => None,
+        };
+
+        ChatTarget {
+            thread,
+            node,
+            secret,
+        }
+    }
+
+    /// The key that remounts the chat when the node, the thread, or the
+    /// channel in the thread's slot changes.
+    fn key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.node.as_deref().unwrap_or_default(),
+            self.thread.kind(),
+            self.thread.key(),
+            self.secret.map(|s| text::to_hex(&s)).unwrap_or_default(),
+        )
     }
 }
 
@@ -343,6 +390,17 @@ impl Ui {
         connected_node(&self.state.peek())
     }
 
+    /// Sends `cmd` so that the session runs it only while it is still
+    /// connected to `node` and `guard` holds. The check happens in the
+    /// session, so it covers state changes this UI has not consumed yet.
+    pub fn send_guarded(&self, node: &str, guard: Guard, cmd: Command) {
+        self.session.send(Command::Guarded {
+            node: node.to_string(),
+            guard,
+            cmd: Box::new(cmd),
+        });
+    }
+
     /// Marks the open thread read once per (thread, node) pair; covers a
     /// thread opened before the node was known.
     pub fn mark_open_read(&self) {
@@ -522,13 +580,35 @@ pub fn App() -> Element {
         set_window_title(&window_title(unread()));
     });
 
+    let chat_target = use_memo({
+        let ui = ui.clone();
+
+        move || {
+            let View::Thread(thread) = (ui.view)() else {
+                return None;
+            };
+            let _ = (ui.revision)();
+
+            Some(ChatTarget::of(&ui.store, (ui.node)(), thread))
+        }
+    });
     let main_view = match (ui.view)() {
         View::None => rsx! { div { class: "placeholder", "Select a conversation" } },
-        View::Thread(thread) => {
-            let key = format!("{}:{}", thread.kind(), thread.key());
-
-            rsx! { Chat { key: "{key}", thread } }
-        }
+        // A keyed one-item list, because a key alone does not remount a lone
+        // component: the draft belongs to one radio and one channel.
+        View::Thread(_) => match chat_target() {
+            Some(target) => rsx! {
+                for target in [target] {
+                    Chat {
+                        key: "{target.key()}",
+                        thread: target.thread.clone(),
+                        node: target.node.clone(),
+                        secret: target.secret,
+                    }
+                }
+            },
+            None => rsx! {},
+        },
         View::Contacts => rsx! { Contacts {} },
         View::Settings(tab) => rsx! { Settings { tab } },
     };
