@@ -1,0 +1,8 @@
+/target
+.overseer/
+graphify-out
+.codex
+.claude
+*.db
+*.db-wal
+*.db-shm
