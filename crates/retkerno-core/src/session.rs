@@ -10,11 +10,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::future::pending;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::config::ConnectionConfig;
 use crate::error::{Error, Result};
-use crate::model::{Channel, DeliveryStatus, DeviceInfo, Direction, Message, NewMessage, ThreadId};
+use crate::model::{
+    Channel, Contact, DeliveryStatus, DeviceInfo, Direction, Message, NewMessage, ThreadId,
+};
 use crate::radio::{
     ConnectTarget, DeviceSettings, FakeRadio, MAX_CHANNEL_NAME_BYTES, Radio, RadioEvent,
 };
@@ -118,6 +121,7 @@ pub enum Update {
 }
 
 /// Where the session gets its radio.
+#[derive(Clone)]
 pub enum Connector {
     /// Open a real radio from the connection settings.
     Real,
@@ -150,6 +154,7 @@ impl Session {
             updates: updates.clone(),
             state_tx,
             conn: None,
+            attempt: None,
             deadlines: Vec::new(),
             retry_at: None,
             retry_step: 0,
@@ -192,6 +197,39 @@ struct Conn {
     device: Option<DeviceInfo>,
 }
 
+/// What one pass over the radio read: everything a store snapshot holds.
+struct Snapshot {
+    info: DeviceInfo,
+    channels: Vec<Channel>,
+    contacts: Vec<Contact>,
+}
+
+/// What a finished connect attempt hands back to the actor.
+enum Attempted {
+    /// The radio is open and fully read; nothing was written to the store.
+    Ready { conn: Conn, snapshot: Snapshot },
+    /// The attempt failed. `conn` holds the radio if it got that far, with
+    /// `device` set when `start()` had verified the node id.
+    Failed { error: Error, conn: Option<Conn> },
+}
+
+/// What to do with a connect attempt once it finishes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fate {
+    /// Use the result.
+    Keep,
+    /// `Disconnect` arrived: drop the radio and publish nothing else.
+    Abandon,
+    /// `Reconfigure` arrived: drop the radio, then connect again.
+    Restart,
+}
+
+/// A connect attempt running in its own task, so the actor stays responsive.
+struct Attempt {
+    task: JoinHandle<Attempted>,
+    fate: Fate,
+}
+
 /// The task behind a [`Session`].
 struct Actor {
     store: Store,
@@ -201,6 +239,7 @@ struct Actor {
     updates: broadcast::Sender<Update>,
     state_tx: watch::Sender<ConnState>,
     conn: Option<Conn>,
+    attempt: Option<Attempt>,
     /// Sent direct messages waiting for an ack: when to give up, row id.
     deadlines: Vec<(Instant, i64)>,
     retry_at: Option<Instant>,
@@ -213,7 +252,7 @@ impl Actor {
     /// Runs until every [`Session`] handle is dropped.
     async fn run(mut self) {
         if self.cfg.auto_connect {
-            self.connect().await;
+            self.connect();
         }
 
         loop {
@@ -223,13 +262,16 @@ impl Actor {
                 cmd = self.command_rx.recv() => match cmd {
                     Some(cmd) => self.handle(cmd).await,
                     None => {
-                        self.abandon().await;
+                        self.finish_for_shutdown().await;
 
                         return;
                     }
                 },
                 event = next_radio_event(&mut self.conn) => {
                     self.on_radio_event(event).await;
+                },
+                (fate, attempted) = next_attempt(&mut self.attempt) => {
+                    self.on_attempt(fate, attempted).await;
                 },
                 () = sleep_until_opt(timer) => self.on_timer().await,
             }
@@ -267,33 +309,72 @@ impl Actor {
 
     // ── Connection lifecycle ────────────────────────────────────────────────
 
-    /// Opens the radio and syncs; ignored while a radio is held.
-    async fn connect(&mut self) {
+    /// Starts a connect attempt in its own task.
+    ///
+    /// Ignored while a radio is held or an attempt is pending, except that
+    /// an attempt cancelled by `Disconnect` is revived: the user asked to
+    /// connect again before it finished.
+    fn connect(&mut self) {
         if self.conn.is_some() {
+            return;
+        }
+
+        if let Some(attempt) = &mut self.attempt {
+            if attempt.fate == Fate::Abandon {
+                attempt.fate = Fate::Restart;
+                self.set_state(ConnState::Connecting);
+            }
+
             return;
         }
 
         self.retry_at = None;
         self.set_state(ConnState::Connecting);
 
-        if let Err(e) = self.establish().await {
-            self.connect_failed(e).await;
+        let task = tokio::spawn(attempt_connect(self.connector.clone(), self.cfg.clone()));
+
+        self.attempt = Some(Attempt {
+            task,
+            fate: Fate::Keep,
+        });
+    }
+
+    /// Handles a finished connect attempt according to its fate.
+    async fn on_attempt(&mut self, fate: Fate, attempted: Attempted) {
+        let conn = match (fate, attempted) {
+            (Fate::Keep, Attempted::Ready { conn, snapshot }) => {
+                self.conn = Some(conn);
+
+                match self.finish_connect(snapshot).await {
+                    Ok(()) => {}
+                    Err(e) => self.connect_failed(e).await,
+                }
+
+                return;
+            }
+            (Fate::Keep, Attempted::Failed { error, conn }) => {
+                self.conn = conn;
+                self.connect_failed(error).await;
+
+                return;
+            }
+            (_, Attempted::Ready { conn, .. }) => Some(conn),
+            (_, Attempted::Failed { conn, .. }) => conn,
+        };
+
+        self.conn = conn;
+        self.abandon().await;
+
+        if fate == Fate::Restart {
+            self.connect();
         }
     }
 
-    /// Connect step: open, subscribe, sync, then publish `Connected`.
-    async fn establish(&mut self) -> Result<()> {
-        let radio = self.open_radio().await?;
-        let events = radio.subscribe();
+    /// Stores the snapshot an attempt read, then goes `Connected`.
+    async fn finish_connect(&mut self, snapshot: Snapshot) -> Result<()> {
+        self.commit(&snapshot)?;
 
-        self.conn = Some(Conn {
-            radio,
-            events,
-            device: None,
-        });
-
-        let info = self.sync().await?;
-        let failed = self.store.fail_unfinished(&info.node_id)?;
+        let failed = self.store.fail_unfinished(&snapshot.info.node_id)?;
 
         if failed > 0 {
             self.notice(format!("{failed} unsent messages marked failed"));
@@ -301,54 +382,31 @@ impl Actor {
 
         self.retry_step = 0;
         self.battery_at = Some(Instant::now() + BATTERY_POLL);
-        self.set_state(ConnState::Connected(info));
+        self.set_state(ConnState::Connected(snapshot.info));
         self.changed();
         self.drain().await;
 
         Ok(())
     }
 
-    /// Gets a radio from the connector.
-    async fn open_radio(&self) -> Result<Radio> {
-        match &self.connector {
-            Connector::Real => {
-                let target = ConnectTarget::from_config(&self.cfg)?;
+    /// Writes a snapshot into the store: device, channels, then contacts.
+    fn commit(&self, snapshot: &Snapshot) -> Result<()> {
+        let node = &snapshot.info.node_id;
 
-                tokio::time::timeout(CONNECT_TIMEOUT, Radio::connect(&target))
-                    .await
-                    .map_err(|_| Error::Radio("connect timed out".into()))?
-            }
-            Connector::Fake(fake) => {
-                if fake.state().fail_connect {
-                    return Err(Error::Radio("connect refused".into()));
-                }
-
-                Ok(Radio::Fake(fake.clone()))
-            }
-        }
+        self.store.save_device(&snapshot.info)?;
+        self.store.replace_channels(node, &snapshot.channels)?;
+        self.store.replace_contacts(node, &snapshot.contacts)
     }
 
-    /// Sync step: device report, channels, contacts into the store.
-    ///
-    /// Returns the fresh report. Nothing is written for a step that failed,
-    /// so the store keeps its previous snapshot of it.
-    async fn sync(&mut self) -> Result<DeviceInfo> {
-        let conn = self.conn.as_mut().ok_or(Error::NotConnected)?;
-        let info = conn.radio.start().await?;
+    /// Waits out a pending attempt and drops its radio, then the held one.
+    async fn finish_for_shutdown(&mut self) {
+        if let Some(mut attempt) = self.attempt.take() {
+            let attempted = join_attempt(&mut attempt.task).await;
 
-        conn.device = Some(info.clone());
-        self.store.save_device(&info)?;
+            self.on_attempt(Fate::Abandon, attempted).await;
+        }
 
-        let max = info.max_channels.unwrap_or(DEFAULT_MAX_CHANNELS);
-        let channels = conn.radio.channels(max).await?;
-
-        self.store.replace_channels(&info.node_id, &channels)?;
-
-        let contacts = conn.radio.contacts(0).await?;
-
-        self.store.replace_contacts(&info.node_id, &contacts)?;
-
-        Ok(info)
+        self.abandon().await;
     }
 
     /// Records a failed connect and schedules a retry when appropriate.
@@ -374,8 +432,16 @@ impl Actor {
     }
 
     /// `Disconnect`: cancel the retry, close the radio, stay down.
+    ///
+    /// A pending connect attempt is marked for abandonment; its radio is
+    /// dropped when it finishes.
     async fn disconnect(&mut self) {
         self.retry_at = None;
+
+        if let Some(attempt) = &mut self.attempt {
+            attempt.fate = Fate::Abandon;
+        }
+
         self.abandon().await;
         self.set_state(ConnState::Disconnected);
     }
@@ -496,7 +562,7 @@ impl Actor {
 
         if self.retry_at.is_some_and(|at| at <= now) {
             self.retry_at = None;
-            self.connect().await;
+            self.connect();
         }
 
         if self.refresh_at.is_some_and(|at| at <= now) {
@@ -588,13 +654,9 @@ impl Actor {
     /// Dispatches one command.
     async fn handle(&mut self, cmd: Command) {
         match cmd {
-            Command::Connect => self.connect().await,
+            Command::Connect => self.connect(),
             Command::Disconnect => self.disconnect().await,
-            Command::Reconfigure(cfg) => {
-                self.cfg = cfg;
-                self.disconnect().await;
-                self.connect().await;
-            }
+            Command::Reconfigure(cfg) => self.reconfigure(cfg).await,
             _ if self.conn.is_none() => self.notice("Not connected"),
             Command::SendText { thread, text } => self.send_text(thread, text).await,
             Command::Retry { message_id } => self.retry(message_id).await,
@@ -980,17 +1042,152 @@ impl Actor {
         Ok(())
     }
 
-    /// `Refresh`: the sync step again, keeping the old snapshot on failure
-    /// and every ack deadline.
+    /// `Reconfigure`: replace the settings, then reconnect.
+    ///
+    /// A pending connect attempt is dropped when it finishes, and the new
+    /// attempt starts then.
+    async fn reconfigure(&mut self, cfg: ConnectionConfig) {
+        self.cfg = cfg;
+
+        if let Some(attempt) = &mut self.attempt {
+            attempt.fate = Fate::Restart;
+
+            if *self.state_tx.borrow() != ConnState::Connecting {
+                self.set_state(ConnState::Connecting);
+            }
+
+            return;
+        }
+
+        self.disconnect().await;
+        self.connect();
+    }
+
+    /// `Refresh`: read everything again, then replace the snapshot.
+    ///
+    /// Every radio read happens before the first write, so a failure keeps
+    /// the old store snapshot, the published state, and every ack deadline.
     async fn refresh(&mut self) {
-        match self.sync().await {
+        let result = async {
+            let snapshot = read_snapshot(&self.conn()?.radio).await?;
+
+            self.commit(&snapshot)?;
+
+            Ok(snapshot.info)
+        }
+        .await;
+
+        match result {
             Ok(info) => {
+                if let Some(conn) = &mut self.conn {
+                    conn.device = Some(info.clone());
+                }
+
                 self.set_state(ConnState::Connected(info));
                 self.changed();
             }
             Err(e) => self.fail("Refresh", &e),
         }
     }
+}
+
+/// Connect step run in its own task: open, subscribe, then read everything.
+///
+/// Touches no store, so a cancelled attempt leaves nothing behind but its
+/// radio, which the actor drops.
+async fn attempt_connect(connector: Connector, cfg: ConnectionConfig) -> Attempted {
+    let radio = match open_radio(&connector, &cfg).await {
+        Ok(radio) => radio,
+        Err(error) => return Attempted::Failed { error, conn: None },
+    };
+    let mut conn = Conn {
+        events: radio.subscribe(),
+        radio,
+        device: None,
+    };
+    let info = match conn.radio.start().await {
+        Ok(info) => info,
+        Err(error) => {
+            return Attempted::Failed {
+                error,
+                conn: Some(conn),
+            };
+        }
+    };
+
+    conn.device = Some(info.clone());
+
+    match read_tables(&conn.radio, info).await {
+        Ok(snapshot) => Attempted::Ready { conn, snapshot },
+        Err(error) => Attempted::Failed {
+            error,
+            conn: Some(conn),
+        },
+    }
+}
+
+/// Gets a radio from the connector.
+async fn open_radio(connector: &Connector, cfg: &ConnectionConfig) -> Result<Radio> {
+    match connector {
+        Connector::Real => {
+            let target = ConnectTarget::from_config(cfg)?;
+
+            tokio::time::timeout(CONNECT_TIMEOUT, Radio::connect(&target))
+                .await
+                .map_err(|_| Error::Radio("connect timed out".into()))?
+        }
+        Connector::Fake(fake) => {
+            if fake.state().fail_connect {
+                return Err(Error::Radio("connect refused".into()));
+            }
+
+            Ok(Radio::Fake(fake.clone()))
+        }
+    }
+}
+
+/// Reads the device report, channels, and contacts; stores nothing.
+async fn read_snapshot(radio: &Radio) -> Result<Snapshot> {
+    let info = radio.start().await?;
+
+    read_tables(radio, info).await
+}
+
+/// Reads channels and contacts for an already verified device report.
+async fn read_tables(radio: &Radio, info: DeviceInfo) -> Result<Snapshot> {
+    let max = info.max_channels.unwrap_or(DEFAULT_MAX_CHANNELS);
+    let channels = radio.channels(max).await?;
+    let contacts = radio.contacts(0).await?;
+
+    Ok(Snapshot {
+        info,
+        channels,
+        contacts,
+    })
+}
+
+/// Waits for the pending attempt and returns its fate with its result.
+///
+/// Never resolves without one. Clears the attempt once it has finished, so
+/// the finished task is never polled again.
+async fn next_attempt(attempt: &mut Option<Attempt>) -> (Fate, Attempted) {
+    let Some(pending_attempt) = attempt else {
+        return pending().await;
+    };
+    let attempted = join_attempt(&mut pending_attempt.task).await;
+    let fate = pending_attempt.fate;
+
+    *attempt = None;
+
+    (fate, attempted)
+}
+
+/// Awaits an attempt task; a panic in it counts as a failed attempt.
+async fn join_attempt(task: &mut JoinHandle<Attempted>) -> Attempted {
+    task.await.unwrap_or_else(|e| Attempted::Failed {
+        error: Error::Radio(format!("connect task failed: {e}")),
+        conn: None,
+    })
 }
 
 /// Waits for the next push from the held radio; never resolves without one.

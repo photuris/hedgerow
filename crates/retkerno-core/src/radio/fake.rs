@@ -79,6 +79,9 @@ pub struct FakeState {
     pub fail_call: Option<(String, FakeFailure)>,
     /// Makes the session's connect step fail.
     pub fail_connect: bool,
+    /// How long `start` sleeps (tokio time) before it records the call
+    /// and answers.
+    pub start_delay_ms: u64,
     /// The `timeout_ms` that `send_text` reports.
     pub ack_timeout_ms: u32,
     /// Delivers an ack 1500 ms after every direct message.
@@ -109,6 +112,7 @@ impl FakeRadio {
             fail_next: None,
             fail_call: None,
             fail_connect: false,
+            start_delay_ms: 0,
             ack_timeout_ms: 3000,
             auto_ack: false,
             next_ack: 1,
@@ -170,8 +174,14 @@ impl FakeRadio {
         Ok(st)
     }
 
-    /// Returns the seeded device report.
-    pub(super) fn start(&self) -> Result<DeviceInfo> {
+    /// Returns the seeded device report after `start_delay_ms`.
+    pub(super) async fn start(&self) -> Result<DeviceInfo> {
+        let delay = self.state().start_delay_ms;
+
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+
         Ok(self.enter("start".into())?.device.clone())
     }
 

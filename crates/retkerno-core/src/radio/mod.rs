@@ -343,7 +343,7 @@ impl Radio {
     pub async fn start(&self) -> Result<DeviceInfo> {
         match self {
             Radio::Mesh(r) => r.start().await,
-            Radio::Fake(r) => r.start(),
+            Radio::Fake(r) => r.start().await,
         }
     }
 

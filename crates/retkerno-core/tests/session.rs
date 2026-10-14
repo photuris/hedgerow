@@ -615,3 +615,119 @@ async fn should_back_off_5_10_20_seconds_when_connect_keeps_failing() {
         assert!((gap - want).abs() <= 0.5, "gaps {gaps:?}, want 5/10/20");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn should_keep_whole_snapshot_when_refresh_fails_late() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let mut rx = s.subscribe();
+
+    wait_for("connected", || connected(&s)).await;
+
+    let old_device = store.device(NODE).unwrap();
+    let old_channels = store.channels(NODE).unwrap();
+    let old_contacts = store.contacts(NODE).unwrap();
+
+    {
+        let mut st = f.state();
+
+        st.device.name = "New name".into();
+        st.channels[0].name = "New occupant".into();
+        st.channels[0].secret = [44; 16];
+        st.fail_call = Some((
+            "contacts:".into(),
+            FakeFailure::Radio("contact timeout".into()),
+        ));
+    }
+
+    s.send(Command::Refresh);
+    wait_notice(&mut rx, "Refresh failed").await;
+
+    assert_eq!(
+        store.channels(NODE).unwrap(),
+        old_channels,
+        "failed Refresh replaced channels"
+    );
+    assert_eq!(
+        store.device(NODE).unwrap(),
+        old_device,
+        "failed Refresh replaced device"
+    );
+    assert_eq!(store.contacts(NODE).unwrap(), old_contacts);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_ignore_connect_while_connecting_even_when_attempt_fails() {
+    let f = fake();
+
+    f.state().start_delay_ms = 1000;
+    f.state().fail_call = Some(("start".into(), FakeFailure::Radio("sync failed".into())));
+
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+
+    s.send(Command::Connect);
+    wait_for("connecting", || s.state() == ConnState::Connecting).await;
+    s.send(Command::Connect);
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+
+    assert_eq!(
+        count(&f, "start"),
+        1,
+        "Connect queued while Connecting must be ignored"
+    );
+    assert!(matches!(s.state(), ConnState::Failed(_)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_disconnect_at_once_and_abandon_attempt_when_disconnect_arrives_while_connecting() {
+    let f = fake();
+
+    f.state().start_delay_ms = 5000;
+
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+    let mut rx = s.subscribe();
+
+    s.send(Command::Connect);
+    wait_for("connecting", || s.state() == ConnState::Connecting).await;
+    s.send(Command::Disconnect);
+    wait_for("disconnected", || s.state() == ConnState::Disconnected).await;
+
+    assert_eq!(count(&f, "start"), 0, "start must still be in flight");
+    assert!(!called(&f, "disconnect"), "{:?}", f.state().calls);
+
+    wait_for("attempt abandoned", || called(&f, "disconnect")).await;
+
+    assert_eq!(count(&f, "start"), 1);
+    assert_eq!(s.state(), ConnState::Disconnected);
+    assert!(
+        !drain(&mut rx)
+            .iter()
+            .any(|u| matches!(u, Update::State(ConnState::Connected(_)))),
+        "an abandoned attempt must never publish Connected"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_connect_with_new_config_when_reconfigured_while_connecting() {
+    let f = fake();
+
+    f.state().start_delay_ms = 5000;
+
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+
+    s.send(Command::Connect);
+    wait_for("connecting", || s.state() == ConnState::Connecting).await;
+    s.send(Command::Reconfigure(cfg(false)));
+    wait_for("second start", || count(&f, "start") == 2).await;
+    wait_for("connected", || connected(&s)).await;
+
+    assert_eq!(
+        count(&f, "disconnect"),
+        1,
+        "only the first attempt's radio is abandoned"
+    );
+}

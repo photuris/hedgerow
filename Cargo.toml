@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["vendor/meshcore-rs"]
 
 [workspace.package]
 edition = "2024"
@@ -30,3 +31,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
+
+[patch.crates-io]
+meshcore-rs = { path = "vendor/meshcore-rs" }
