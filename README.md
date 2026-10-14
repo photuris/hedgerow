@@ -49,6 +49,23 @@ cargo run -p retkerno-gui        # the app
 On Linux the GUI needs WebKitGTK 4.1, a Wayland or X11 session, and BlueZ
 for Bluetooth. No `dx` CLI is needed.
 
+### macOS app bundle
+
+On a Mac with Xcode or the Command Line Tools installed, run:
+
+```sh
+./scripts/bundle-macos.sh
+```
+
+The script builds `dist/Retkerno.app` and signs it ad hoc. It runs on the
+Mac that built it. Another Mac needs a Developer ID signature and
+notarization. The `Info.plist` holds the Bluetooth usage text. macOS asks
+for Bluetooth permission the first time the app connects.
+
+macOS hides Bluetooth addresses from apps. Use the radio's advertised
+name, for example `MeshCore-LAGUARDO_LILYGO`, or click Scan in Settings >
+Connection.
+
 ## First run
 
 1. Pair the radio with the operating system first, if it uses Bluetooth.
@@ -137,4 +154,4 @@ cargo run -p retkerno-core --example probe -- --ble 50:78:7D:2B:29:4D
 
 GPS and maps, room-server login, repeater administration, telemetry, path
 discovery and trace, private-key export or import, desktop notifications,
-message search, and packaging.
+message search, Linux packaging, and a notarized macOS build.

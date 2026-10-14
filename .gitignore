@@ -6,3 +6,4 @@ graphify-out
 *.db
 *.db-wal
 *.db-shm
+/dist
