@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use retkerno_core::model::{Contact, ContactKind, ThreadId};
 use retkerno_core::session::{Command, ConnState};
 
-use super::confirm::{Confirm, Modal};
+use super::confirm::{Confirm, Modal, Pending, use_pending};
 use crate::app::Ui;
 use crate::format;
 
@@ -52,7 +52,7 @@ pub fn Contacts() -> Element {
     let mut query = use_signal(String::new);
     let mut kind = use_signal(|| None::<ContactKind>);
     let mut importing = use_signal(|| false);
-    let mut removing = use_signal(|| None::<Contact>);
+    let mut removing = use_pending::<Contact>();
     let contacts = use_memo({
         let ui = ui.clone();
 
@@ -142,24 +142,32 @@ pub fn Contacts() -> Element {
                         contact,
                         now,
                         connected,
-                        onremove: move |c: Contact| removing.set(Some(c)),
+                        onremove: {
+                            let ui = ui.clone();
+
+                            move |c: Contact| removing.set(Pending::open(&ui, c))
+                        },
                     }
                 }
             }
             if importing() {
                 ImportDialog { onclose: move |_| importing.set(false) }
             }
-            if let Some(contact) = removing() {
+            if let Some(pending) = removing() {
                 Confirm {
                     title: "Remove contact",
-                    lines: vec![format!("Remove {} from the radio's contacts?", contact.name)],
+                    lines: vec![format!("Remove {} from the radio's contacts?", pending.action.name)],
                     confirm_label: "Remove",
+                    needs_connection: true,
                     onconfirm: {
-                        let session = ui.session.clone();
+                        let ui = ui.clone();
 
                         move |_| {
-                            session.send(Command::RemoveContact(contact.public_key.clone()));
                             removing.set(None);
+
+                            if pending.is_current(&ui.state.peek()) {
+                                ui.session.send(Command::RemoveContact(pending.action.public_key.clone()));
+                            }
                         }
                     },
                     oncancel: move |_| removing.set(None),

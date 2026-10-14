@@ -76,14 +76,19 @@ pub fn Connection() -> Element {
         let ui = ui.clone();
 
         move |_| {
-            let Ok(port) = port_text().trim().parse::<u16>() else {
-                error.set(Some("The TCP port must be a number from 0 to 65535".into()));
-
-                return;
-            };
             let mut connection = draft();
 
-            connection.tcp_port = port;
+            // The port field is only on screen for TCP; for the other
+            // transports the last valid port stays in the config.
+            if connection.transport == Transport::Tcp {
+                let Ok(port) = port_text().trim().parse::<u16>() else {
+                    error.set(Some("The TCP port must be a number from 0 to 65535".into()));
+
+                    return;
+                };
+
+                connection.tcp_port = port;
+            }
 
             let mut config = (ui.config).peek().clone();
             let mut stored = ui.config;

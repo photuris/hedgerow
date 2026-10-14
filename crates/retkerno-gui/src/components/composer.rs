@@ -7,6 +7,27 @@ use retkerno_core::text;
 
 use crate::app::Ui;
 
+/// Sends the composer's current text to `thread`. Reads the input, the
+/// connection, and the device name now, not what the last render saw: an
+/// Enter can arrive before the render that follows an edit. Does nothing
+/// when not connected, when the text is blank, or when it is too long.
+fn send_current(ui: &Ui, thread: &ThreadId, mut input: Signal<String>) {
+    let ConnState::Connected(device) = ui.state.peek().clone() else {
+        return;
+    };
+    let body = input.peek().trim().to_string();
+
+    if body.is_empty() || body.len() > text::max_text_bytes(thread, &device.name) {
+        return;
+    }
+
+    ui.session.send(Command::SendText {
+        thread: thread.clone(),
+        text: body,
+    });
+    input.set(String::new());
+}
+
 /// Multiline input with a byte counter. Enter sends, Shift+Enter inserts a
 /// newline; disabled unless the session is connected.
 #[component]
@@ -22,18 +43,7 @@ pub fn Composer(thread: ThreadId) -> Element {
     let used = body.len();
     let over = used > max;
     let can_send = connected && !body.is_empty() && !over;
-    let send = {
-        let thread = thread.clone();
-
-        move || {
-            ui.session.send(Command::SendText {
-                thread: thread.clone(),
-                text: body.clone(),
-            });
-            input.set(String::new());
-        }
-    };
-    let (send_on_key, send_on_click) = (send.clone(), send);
+    let (ui_on_key, thread_on_key) = (ui.clone(), thread.clone());
 
     rsx! {
         div { class: "composer",
@@ -44,17 +54,10 @@ pub fn Composer(thread: ThreadId) -> Element {
                     disabled: !connected,
                     value: "{input}",
                     oninput: move |evt| input.set(evt.value()),
-                    onkeydown: {
-                        let mut send = send_on_key;
-
-                        move |evt| {
-                            if evt.key() == Key::Enter && !evt.modifiers().shift() && !evt.is_composing() {
-                                evt.prevent_default();
-
-                                if can_send {
-                                    send();
-                                }
-                            }
+                    onkeydown: move |evt| {
+                        if evt.key() == Key::Enter && !evt.modifiers().shift() && !evt.is_composing() {
+                            evt.prevent_default();
+                            send_current(&ui_on_key, &thread_on_key, input);
                         }
                     },
                     onmounted: move |evt| async move {
@@ -65,9 +68,9 @@ pub fn Composer(thread: ThreadId) -> Element {
                     class: "primary",
                     disabled: !can_send,
                     onclick: {
-                        let mut send = send_on_click;
+                        let thread = thread.clone();
 
-                        move |_| send()
+                        move |_| send_current(&ui, &thread, input)
                     },
                     "Send"
                 }

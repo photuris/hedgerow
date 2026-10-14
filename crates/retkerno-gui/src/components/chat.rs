@@ -7,7 +7,7 @@ use retkerno_core::session::Command;
 use retkerno_core::store::Store;
 
 use super::composer::Composer;
-use crate::app::{Ui, should_mark_read};
+use crate::app::{Ui, should_mark_read, window_focused};
 use crate::format;
 
 /// How many of the newest messages a thread shows.
@@ -134,7 +134,7 @@ pub fn Chat(thread: ThreadId) -> Element {
 
         move || {
             let latest = newest_in();
-            let focused = dioxus::desktop::window().is_focused();
+            let focused = window_focused();
 
             if should_mark_read(*seen.peek(), latest, focused) {
                 ui.mark_read(&thread);

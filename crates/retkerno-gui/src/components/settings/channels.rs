@@ -7,7 +7,7 @@ use retkerno_core::text::{self, PUBLIC_CHANNEL_SECRET, hashtag_secret};
 
 use super::device::current_device;
 use crate::app::Ui;
-use crate::components::confirm::Confirm;
+use crate::components::confirm::{Confirm, Pending, use_pending};
 
 /// Most bytes a channel name can use.
 const MAX_NAME_BYTES: usize = 31;
@@ -100,6 +100,20 @@ fn build_channel(
     Ok(Channel { idx, name, secret })
 }
 
+/// Whether the stored slot of `pending` still holds the channel (its secret)
+/// the dialog asked about.
+fn slot_holds(ui: &Ui, pending: &Pending<Channel>) -> bool {
+    let Some(node) = ui.connected_node() else {
+        return false;
+    };
+
+    ui.store.channels(&node).is_ok_and(|channels| {
+        channels
+            .iter()
+            .any(|c| c.idx == pending.action.idx && c.secret == pending.action.secret)
+    })
+}
+
 /// The stored channels and the add form.
 #[component]
 pub fn Channels() -> Element {
@@ -129,7 +143,7 @@ pub fn Channels() -> Element {
         }
     });
     let mut shown = use_signal(Vec::<u8>::new);
-    let mut removing = use_signal(|| None::<Channel>);
+    let mut removing = use_pending::<Channel>();
     let connected = matches!((ui.state)(), ConnState::Connected(_));
     let title = if connected {
         None
@@ -173,7 +187,11 @@ pub fn Channels() -> Element {
                                 class: "danger",
                                 disabled: !connected,
                                 title,
-                                onclick: move |_| removing.set(Some(removed.clone())),
+                                onclick: {
+                                    let ui = ui.clone();
+
+                                    move |_| removing.set(Pending::open(&ui, removed.clone()))
+                                },
                                 "Remove"
                             }
                         }
@@ -182,10 +200,11 @@ pub fn Channels() -> Element {
             }
         }
         AddChannel { channels: channels(), max: max(), connected }
-        if let Some(ch) = removing() {
+        if let Some(pending) = removing() {
             Confirm {
                 title: "Remove channel",
                 lines: {
+                    let ch = &pending.action;
                     let mut lines = vec![format!("Remove channel {} from slot {}?", ch.name, ch.idx)];
 
                     if ch.idx == 0 {
@@ -195,12 +214,16 @@ pub fn Channels() -> Element {
                     lines
                 },
                 confirm_label: "Remove",
+                needs_connection: true,
                 onconfirm: {
-                    let session = ui.session.clone();
+                    let ui = ui.clone();
 
                     move |_| {
-                        session.send(Command::ClearChannel(ch.idx));
                         removing.set(None);
+
+                        if pending.is_current(&ui.state.peek()) && slot_holds(&ui, &pending) {
+                            ui.session.send(Command::ClearChannel(pending.action.idx));
+                        }
                     }
                 },
                 oncancel: move |_| removing.set(None),

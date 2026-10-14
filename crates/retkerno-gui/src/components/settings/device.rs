@@ -7,7 +7,7 @@ use retkerno_core::radio::DeviceSettings;
 use retkerno_core::session::{Command, ConnState};
 
 use crate::app::Ui;
-use crate::components::confirm::Confirm;
+use crate::components::confirm::{Confirm, Pending, use_pending};
 use crate::format;
 
 /// The bandwidths the radio supports, in kHz x 1000.
@@ -141,7 +141,30 @@ fn radio_changed(current: &DeviceSettings, desired: &DeviceSettings) -> bool {
         != (desired.radio_freq, desired.radio_bw, desired.sf, desired.cr)
 }
 
-/// The settings the form asks for: `form` with the numbers as typed.
+/// What a device report says about its settings, with the name trimmed the
+/// way [`settings_diff`] and the core compare it.
+fn settings_of(info: &DeviceInfo) -> DeviceSettings {
+    let mut settings = DeviceSettings::from_device(info);
+
+    settings.name = settings.name.trim().to_string();
+
+    settings
+}
+
+/// What the Apply dialog will send, and the device settings its lines were
+/// computed from.
+#[derive(Clone, Debug, PartialEq)]
+struct ApplyPlan {
+    /// The settings to send.
+    wanted: DeviceSettings,
+    /// The device settings `lines` is the diff against.
+    from: DeviceSettings,
+    /// The confirmation text.
+    lines: Vec<String>,
+}
+
+/// The settings the form asks for: `form` with the numbers as typed and the
+/// name trimmed.
 fn form_settings(form: &DeviceSettings, power: &str, freq: &str) -> Result<DeviceSettings, String> {
     let tx_power = power
         .trim()
@@ -151,6 +174,7 @@ fn form_settings(form: &DeviceSettings, power: &str, freq: &str) -> Result<Devic
     Ok(DeviceSettings {
         tx_power,
         radio_freq: freq_from_mhz(freq)?,
+        name: form.name.trim().to_string(),
         ..form.clone()
     })
 }
@@ -190,7 +214,13 @@ pub fn Device() -> Element {
     });
 
     match info() {
-        Some(info) => rsx! { DeviceView { info } },
+        // A keyed one-item list, because a key alone does not remount a lone
+        // component: the form and its dialog belong to one radio.
+        Some(info) => rsx! {
+            for info in [info] {
+                DeviceView { key: "{info.node_id}", info }
+            }
+        },
         None => rsx! { div { class: "hint", "Connect to a radio to see its settings" } },
     }
 }
@@ -211,20 +241,24 @@ fn Fact(label: String, value: String, children: Element) -> Element {
 #[component]
 fn DeviceView(info: DeviceInfo) -> Element {
     let ui = use_context::<Ui>();
-    let start = DeviceSettings::from_device(&info);
+    let start = settings_of(&info);
     let mut form = use_signal(|| start.clone());
     let mut power = use_signal(|| start.tx_power.to_string());
     let mut freq = use_signal(|| freq_to_mhz(start.radio_freq));
     let mut base = use_signal(|| start);
-    let mut pending = use_signal(|| None::<(DeviceSettings, Vec<String>)>);
+    let mut pending = use_pending::<ApplyPlan>();
 
-    // A new report replaces the form, unless the user has unapplied edits.
+    // A new report of this node replaces the form, unless the user has
+    // unapplied edits. It also closes an open dialog: its lines describe a
+    // diff against settings the radio no longer has.
     use_effect(use_reactive!(|info| {
-        let latest = DeviceSettings::from_device(&info);
+        let latest = settings_of(&info);
 
         if *base.peek() == latest {
             return;
         }
+
+        pending.set(None);
 
         let clean =
             form_settings(&form.peek(), &power.peek(), &freq.peek()) == Ok(base.peek().clone());
@@ -244,7 +278,7 @@ fn DeviceView(info: DeviceInfo) -> Element {
     } else {
         Some("Not connected")
     };
-    let current = DeviceSettings::from_device(&info);
+    let current = settings_of(&info);
     let wanted = form_settings(&form(), &power(), &freq());
     let problem = match &wanted {
         Err(e) => Some(e.clone()),
@@ -278,19 +312,32 @@ fn DeviceView(info: DeviceInfo) -> Element {
         move |_| session.send(command.clone())
     };
     let apply = {
-        let current = current.clone();
+        let ui = ui.clone();
 
+        // Everything is read now, not at render: the dialog's lines must
+        // describe the radio as it is when Apply is clicked.
         move |_| {
+            let ConnState::Connected(device) = ui.state.peek().clone() else {
+                return;
+            };
             let Ok(wanted) = form_settings(&form.peek(), &power.peek(), &freq.peek()) else {
                 return;
             };
-            let mut lines = settings_diff(&current, &wanted);
+            let from = settings_of(&device);
+            let mut lines = settings_diff(&from, &wanted);
 
-            if radio_changed(&current, &wanted) {
+            if radio_changed(&from, &wanted) {
                 lines.push(RADIO_WARNING.to_string());
             }
 
-            pending.set(Some((wanted, lines)));
+            pending.set(Pending::open(
+                &ui,
+                ApplyPlan {
+                    wanted,
+                    from,
+                    lines,
+                },
+            ));
         }
     };
 
@@ -454,17 +501,29 @@ fn DeviceView(info: DeviceInfo) -> Element {
             button { disabled: !connected, title, onclick: command(Command::SyncClock), "Sync clock" }
             button { disabled: !connected, title, onclick: command(Command::Refresh), "Refresh" }
         }
-        if let Some((wanted, lines)) = pending() {
+        if let Some(plan) = pending() {
             Confirm {
                 title: "Apply settings",
-                lines,
+                lines: plan.action.lines.clone(),
                 confirm_label: "Apply",
+                needs_connection: true,
                 onconfirm: {
-                    let session = ui.session.clone();
+                    let ui = ui.clone();
 
                     move |_| {
-                        session.send(Command::ApplySettings(wanted.clone()));
                         pending.set(None);
+
+                        // Send only what the lines described: same radio, same
+                        // settings as when they were computed, still valid.
+                        let Some(device) = plan.device(&ui.state.peek()) else {
+                            return;
+                        };
+
+                        if settings_of(&device) == plan.action.from
+                            && plan.action.wanted.validate(&device).is_ok()
+                        {
+                            ui.session.send(Command::ApplySettings(plan.action.wanted.clone()));
+                        }
                     }
                 },
                 oncancel: move |_| pending.set(None),

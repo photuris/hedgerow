@@ -119,10 +119,41 @@ pub fn node_for(state: &ConnState, store: &Store) -> Option<String> {
     })
 }
 
+/// The node id of the radio `state` is connected to.
+pub fn connected_node(state: &ConnState) -> Option<String> {
+    match state {
+        ConnState::Connected(device) => Some(device.node_id.clone()),
+        _ => None,
+    }
+}
+
 /// Whether the open thread should be marked read again: only when its newest
 /// incoming message id grew and the window has focus.
 pub fn should_mark_read(previous: Option<i64>, newest: Option<i64>, focused: bool) -> bool {
     focused && newest > previous
+}
+
+/// Whether the window has focus. Tests have no native window, so they
+/// report a focused one.
+pub fn window_focused() -> bool {
+    #[cfg(test)]
+    {
+        true
+    }
+
+    #[cfg(not(test))]
+    {
+        dioxus::desktop::window().is_focused()
+    }
+}
+
+/// Sets the window title. A no-op in tests, which have no native window.
+fn set_window_title(title: &str) {
+    #[cfg(not(test))]
+    dioxus::desktop::window().set_title(title);
+
+    #[cfg(test)]
+    let _ = title;
 }
 
 /// Current unix time in seconds.
@@ -261,7 +292,7 @@ impl Ui {
     }
 
     /// Stores `state` and recomputes the node.
-    fn apply_state(&self, state: ConnState) {
+    pub(crate) fn apply_state(&self, state: ConnState) {
         let (mut node, mut current) = (self.node, self.state);
 
         node.set(node_for(&state, &self.store));
@@ -295,14 +326,21 @@ impl Ui {
         }
     }
 
-    /// Opens `thread`: shows it and marks it read.
+    /// Opens `thread`. The App's opening effect marks it read once the chat
+    /// has taken its first snapshot, so a message that lands in between is
+    /// not marked read before the chat has seen it.
     pub fn select(&self, thread: ThreadId) {
         let (mut view, mut opened) = (self.view, self.opened);
 
         // Forget the last open so clicking the open thread marks it read again.
         opened.set(None);
         view.set(View::Thread(thread));
-        self.mark_open_read();
+    }
+
+    /// The node id of the connected radio, `None` unless the session is
+    /// connected. Reads the state at call time.
+    pub fn connected_node(&self) -> Option<String> {
+        connected_node(&self.state.peek())
     }
 
     /// Marks the open thread read once per (thread, node) pair; covers a
@@ -481,7 +519,7 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
-        dioxus::desktop::window().set_title(&window_title(unread()));
+        set_window_title(&window_title(unread()));
     });
 
     let main_view = match (ui.view)() {
