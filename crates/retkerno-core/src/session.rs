@@ -38,6 +38,10 @@ const CONTACTS_REFRESH_DELAY: Duration = Duration::from_secs(2);
 /// How often the battery is polled while connected.
 const BATTERY_POLL: Duration = Duration::from_secs(120);
 
+/// How often the queue is drained while connected, in case a "messages
+/// waiting" push was missed.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Extra wait after the radio's suggested ack timeout.
 const ACK_GRACE: Duration = Duration::from_millis(5000);
 
@@ -193,6 +197,7 @@ impl Session {
             retry_step: 0,
             refresh_at: None,
             battery_at: None,
+            health_at: None,
         };
 
         tokio::spawn(actor.run());
@@ -279,6 +284,8 @@ struct Actor {
     retry_step: usize,
     refresh_at: Option<Instant>,
     battery_at: Option<Instant>,
+    /// When the next safety-net drain is due; reset by every drain.
+    health_at: Option<Instant>,
 }
 
 impl Actor {
@@ -491,6 +498,16 @@ impl Actor {
         }
     }
 
+    /// A radio call failed with `Error::Radio`: the link is dead or its
+    /// state unknown. Handled like a `Disconnected` event, and the session
+    /// reconnects even without `auto_connect` because the user was connected.
+    async fn link_lost(&mut self) {
+        self.abandon().await;
+        self.set_state(ConnState::Disconnected);
+        self.notice("Radio connection lost; reconnecting");
+        self.schedule_retry();
+    }
+
     /// Stops using the radio: disconnect it, forget every deadline and
     /// timer, and fail what its connection left unfinished.
     ///
@@ -505,6 +522,7 @@ impl Actor {
         self.deadlines.clear();
         self.refresh_at = None;
         self.battery_at = None;
+        self.health_at = None;
 
         let Some(device) = conn.device else {
             return;
@@ -582,11 +600,16 @@ impl Actor {
 
     /// Earliest instant at which `on_timer` has something to do.
     fn next_timer(&self) -> Option<Instant> {
-        [self.retry_at, self.refresh_at, self.battery_at]
-            .into_iter()
-            .flatten()
-            .chain(self.deadlines.iter().map(|(at, _)| *at))
-            .min()
+        [
+            self.retry_at,
+            self.refresh_at,
+            self.battery_at,
+            self.health_at,
+        ]
+        .into_iter()
+        .flatten()
+        .chain(self.deadlines.iter().map(|(at, _)| *at))
+        .min()
     }
 
     /// Runs everything whose time has come.
@@ -605,6 +628,10 @@ impl Actor {
 
         if self.battery_at.is_some_and(|at| at <= now) {
             self.poll_battery().await;
+        }
+
+        if self.health_at.is_some_and(|at| at <= now) {
+            self.drain().await;
         }
 
         self.expire_deadlines(now);
@@ -645,7 +672,8 @@ impl Actor {
 
                 self.set_state(state);
             }
-            (Err(e), _) => tracing::warn!(error = %e, "battery poll failed"),
+            (Err(Error::Radio(_)), _) => self.link_lost().await,
+            (Err(e), _) => self.fail("Battery poll", &e),
             (Ok(_), None) => {}
         }
     }
@@ -806,12 +834,18 @@ impl Actor {
     async fn drain(&mut self) {
         let mut inserted = false;
 
-        if let Err(e) = self.drain_queue(&mut inserted).await {
-            self.fail("Reading messages", &e);
-        }
+        self.health_at = Some(Instant::now() + HEALTH_INTERVAL);
+
+        let drained = self.drain_queue(&mut inserted).await;
 
         if inserted {
             self.changed();
+        }
+
+        match drained {
+            Ok(()) => {}
+            Err(Error::Radio(_)) => self.link_lost().await,
+            Err(e) => self.fail("Reading messages", &e),
         }
     }
 
