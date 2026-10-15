@@ -10,7 +10,9 @@ use retkerno_core::config::ConnectionConfig;
 use retkerno_core::model::{
     Channel, Contact, ContactKind, DeliveryStatus, DeviceInfo, Direction, NewMessage, ThreadId,
 };
-use retkerno_core::radio::{DeviceSettings, FakeFailure, FakeRadio, FakeSent, RadioEvent};
+use retkerno_core::radio::{
+    DeviceSettings, FakeFailure, FakeRadio, FakeSent, IncomingMessage, RadioEvent,
+};
 use retkerno_core::session::{Command, ConnState, Connector, Guard, Session, Update};
 use retkerno_core::store::Store;
 use retkerno_core::text;
@@ -1039,4 +1041,93 @@ async fn should_refuse_guarded_command_nested_in_a_guarded_command() {
     wait_notice(&mut rx, "Invalid command").await;
 
     assert_eq!(f.state().calls.len(), calls_before);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_store_queued_message_within_31_seconds_when_no_push_arrives() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+
+    wait_for("connected", || connected(&s)).await;
+
+    f.state().inbox.push_back(IncomingMessage {
+        thread: ThreadId::Channel(0),
+        sender: Some("Alice".into()),
+        text: "quiet hello".into(),
+        sender_ts: 1_700_000_000,
+        path_len: Some(1),
+        snr: None,
+    });
+    tokio::time::sleep(Duration::from_secs(31)).await;
+
+    let stored = store.messages(NODE, &ThreadId::Channel(0), 10).unwrap();
+
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert_eq!(stored[0].text, "quiet hello");
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_reconnect_after_5_seconds_when_health_drain_hits_radio_error() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+    let mut rx = s.subscribe();
+
+    s.send(Command::Connect);
+    wait_for("connected", || connected(&s)).await;
+
+    f.state().fail_call = Some(("next_message".into(), FakeFailure::Radio("timeout".into())));
+    tokio::time::sleep(Duration::from_secs(31)).await;
+
+    assert_eq!(s.state(), ConnState::Disconnected);
+    assert!(called(&f, "disconnect"), "{:?}", f.state().calls);
+    wait_notice(&mut rx, "connection lost").await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    assert_eq!(count(&f, "start"), 1, "retry came before 5 s");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for("second start", || count(&f, "start") == 2).await;
+    wait_for("connected again", || connected(&s)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_stay_connected_when_health_drain_is_rejected() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, true);
+    let mut rx = s.subscribe();
+
+    wait_for("connected", || connected(&s)).await;
+
+    f.state().fail_call = Some(("next_message".into(), FakeFailure::Rejected("busy".into())));
+    tokio::time::sleep(Duration::from_secs(31)).await;
+
+    wait_notice(&mut rx, "Reading messages failed").await;
+
+    assert!(connected(&s));
+    assert!(!called(&f, "disconnect"), "{:?}", f.state().calls);
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_reconnect_when_battery_poll_hits_radio_error() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+    let mut rx = s.subscribe();
+
+    s.send(Command::Connect);
+    wait_for("connected", || connected(&s)).await;
+
+    f.state().fail_call = Some(("battery".into(), FakeFailure::Radio("timeout".into())));
+    tokio::time::sleep(Duration::from_secs(121)).await;
+
+    assert!(called(&f, "disconnect"), "{:?}", f.state().calls);
+    wait_notice(&mut rx, "connection lost").await;
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    wait_for("second start", || count(&f, "start") == 2).await;
+    wait_for("connected again", || connected(&s)).await;
 }

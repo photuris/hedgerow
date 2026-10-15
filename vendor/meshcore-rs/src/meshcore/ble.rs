@@ -231,6 +231,12 @@ impl MeshCore {
 
         // Spawn write task
         // BLE does NOT use framing - send raw payload directly (unlike serial which uses [0x3c][len][payload])
+        // The first write error marks the client disconnected, emits
+        // Disconnected once, and ends the task. Dropping `rx` makes later
+        // sends fail fast instead of queueing.
+        let write_connected = meshcore.connected.clone();
+        let write_dispatcher = meshcore.dispatcher.clone();
+
         let write_task = tokio::spawn(async move {
             while let Some(data) = rx.recv().await {
                 tracing::debug!("BLE TX: {} bytes: {:02x?}", data.len(), &data);
@@ -243,7 +249,14 @@ impl MeshCore {
                         Ok(_) => tracing::trace!("BLE TX chunk: {} bytes sent", chunk.len()),
                         Err(e) => {
                             tracing::error!("BLE TX error: {}", e);
-                            break;
+                            *write_connected.write().await = false;
+                            write_dispatcher
+                                .emit(MeshCoreEvent::new(
+                                    EventType::Disconnected,
+                                    EventPayload::None,
+                                ))
+                                .await;
+                            return;
                         }
                     }
                 }
