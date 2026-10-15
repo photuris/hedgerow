@@ -833,9 +833,6 @@ impl Actor {
     /// still announced.
     async fn drain(&mut self) {
         let mut inserted = false;
-
-        self.health_at = Some(Instant::now() + HEALTH_INTERVAL);
-
         let drained = self.drain_queue(&mut inserted).await;
 
         if inserted {
@@ -846,6 +843,12 @@ impl Actor {
             Ok(()) => {}
             Err(Error::Radio(_)) => self.link_lost().await,
             Err(e) => self.fail("Reading messages", &e),
+        }
+
+        // Counted from completion, so a long backlog drain does not leave the
+        // next safety drain overdue. A lost link cleared the timer; keep it so.
+        if self.conn.is_some() {
+            self.health_at = Some(Instant::now() + HEALTH_INTERVAL);
         }
     }
 
