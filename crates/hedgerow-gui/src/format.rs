@@ -4,7 +4,7 @@
 //! results follow the machine's time zone.
 
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
-use retkerno_core::model::{DeliveryStatus, Message};
+use hedgerow_core::model::{DeliveryStatus, Message};
 
 /// Seconds in a day.
 const DAY_SECS: i64 = 86_400;
@@ -185,7 +185,7 @@ pub fn highlight<'a>(text: &'a str, query: &str) -> Vec<(&'a str, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use retkerno_core::model::{Direction, ThreadId};
+    use hedgerow_core::model::{Direction, ThreadId};
 
     use super::*;
 

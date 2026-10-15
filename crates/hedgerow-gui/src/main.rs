@@ -1,4 +1,4 @@
-//! `retkerno`: Dioxus desktop client over `retkerno_core`.
+//! `hedgerow`: Dioxus desktop client over `hedgerow_core`.
 
 mod app;
 mod components;
@@ -10,9 +10,9 @@ mod ui_tests;
 use std::path::PathBuf;
 
 use dioxus::desktop::{Config as WindowConfig, LogicalSize, WindowBuilder};
-use retkerno_core::config::{Config, data_dir};
-use retkerno_core::fixtures;
-use retkerno_core::store::Store;
+use hedgerow_core::config::{Config, data_dir};
+use hedgerow_core::fixtures;
+use hedgerow_core::store::Store;
 
 use crate::app::{App, Boot, Hooks};
 
@@ -35,17 +35,17 @@ fn init_logging() {
 /// Reads the test hooks. The only place that touches the process environment.
 fn hooks_from_env() -> Hooks {
     Hooks {
-        exit_after_ms: std::env::var("RETKERNO_EXIT_AFTER_MS")
+        exit_after_ms: std::env::var("HEDGEROW_EXIT_AFTER_MS")
             .ok()
             .and_then(|v| v.parse().ok()),
-        dump_text: std::env::var_os("RETKERNO_DUMP_TEXT").map(PathBuf::from),
-        start_view: std::env::var("RETKERNO_START_VIEW").ok(),
+        dump_text: std::env::var_os("HEDGEROW_DUMP_TEXT").map(PathBuf::from),
+        start_view: std::env::var("HEDGEROW_START_VIEW").ok(),
     }
 }
 
 /// Opens the store and config. UI-test mode uses an in-memory store, the default config and
 /// the demo radio, and never reads or writes the config file or the data directory.
-fn boot(ui_test: bool, hooks: Hooks) -> retkerno_core::Result<Boot> {
+fn boot(ui_test: bool, hooks: Hooks) -> hedgerow_core::Result<Boot> {
     if ui_test {
         return Ok(Boot {
             store: Store::open_memory()?,
@@ -59,7 +59,7 @@ fn boot(ui_test: bool, hooks: Hooks) -> retkerno_core::Result<Boot> {
 
     Ok(Boot {
         config: Config::load()?,
-        store: Store::open(&data_dir().join("retkerno.db"))?,
+        store: Store::open(&data_dir().join("hedgerow.db"))?,
         fake: None,
         hooks,
     })
@@ -68,16 +68,16 @@ fn boot(ui_test: bool, hooks: Hooks) -> retkerno_core::Result<Boot> {
 fn main() {
     init_logging();
 
-    let ui_test = std::env::var("RETKERNO_UI_TEST").is_ok_and(|v| !v.is_empty() && v != "0");
+    let ui_test = std::env::var("HEDGEROW_UI_TEST").is_ok_and(|v| !v.is_empty() && v != "0");
     let boot = match boot(ui_test, hooks_from_env()) {
         Ok(boot) => boot,
         Err(e) => {
-            eprintln!("retkerno: {e}");
+            eprintln!("hedgerow: {e}");
             std::process::exit(1);
         }
     };
     let window = WindowBuilder::new()
-        .with_title("Retkerno")
+        .with_title("Hedgerow")
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .with_min_inner_size(LogicalSize::new(800.0, 500.0))
         .with_decorations(want_decorations(&boot.config.ui.decorations));

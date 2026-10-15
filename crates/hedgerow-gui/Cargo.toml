@@ -1,18 +1,18 @@
 [package]
-name = "retkerno-gui"
+name = "hedgerow-gui"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "retkerno"
+name = "hedgerow"
 path = "src/main.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
-retkerno-core = { path = "../retkerno-core" }
+hedgerow-core = { path = "../hedgerow-core" }
 arboard.workspace = true
 chrono.workspace = true
 dioxus.workspace = true

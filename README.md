@@ -1,8 +1,8 @@
-# Retkerno
+# Hedgerow
 
 A desktop chat client for [MeshCore](https://meshcore.co.uk) companion
-radios. It's written in Rust, with a Dioxus 0.7 desktop GUI. "Retkerno" is
-Esperanto for "meshcore".
+radios. It's written in Rust, with a Dioxus 0.7 desktop GUI. A hedgerow is
+a living mesh strung between fields.
 
 This is a first pass. It covers chat in channels and direct threads,
 unread tracking, contacts, channels, and device settings. GPS, maps, room
@@ -44,8 +44,8 @@ servers, repeater administration, and telemetry are not in it yet.
 
 | Path | What it is |
 |---|---|
-| `crates/retkerno-core` | All logic: config, SQLite store, radio wrapper (real and fake), session actor, demo fixtures. |
-| `crates/retkerno-gui` | The `retkerno` binary: a Dioxus desktop view over the core. |
+| `crates/hedgerow-core` | All logic: config, SQLite store, radio wrapper (real and fake), session actor, demo fixtures. |
+| `crates/hedgerow-gui` | The `hedgerow` binary: a Dioxus desktop view over the core. |
 | `vendor/meshcore-rs` | [`meshcore-rs`](https://github.com/andrewdavidmackenzie/meshcore-rs) 0.2.0 (MIT) with three patches. `PATCHES.md` lists them. |
 
 ## Build and run
@@ -53,7 +53,7 @@ servers, repeater administration, and telemetry are not in it yet.
 ```sh
 cargo build --workspace
 cargo test --workspace
-cargo run -p retkerno-gui        # the app
+cargo run -p hedgerow-gui        # the app
 ```
 
 On Linux the GUI needs WebKitGTK 4.1, a Wayland or X11 session, and BlueZ
@@ -67,7 +67,7 @@ On a Mac with Xcode or the Command Line Tools installed, run:
 ./scripts/bundle-macos.sh
 ```
 
-The script builds `dist/Retkerno.app` and signs it ad hoc. It runs on the
+The script builds `dist/Hedgerow.app` and signs it ad hoc. It runs on the
 Mac that built it. Another Mac needs a Developer ID signature and
 notarization. The `Info.plist` holds the Bluetooth usage text. macOS asks
 for Bluetooth permission the first time the app connects.
@@ -79,7 +79,7 @@ Connection.
 ## First run
 
 1. Pair the radio with the operating system first, if it uses Bluetooth.
-2. Start `retkerno`.
+2. Start `hedgerow`.
 3. Open Settings > Connection.
 4. Select the transport. For Bluetooth, type the device name or address,
    or click Scan and choose the radio.
@@ -90,20 +90,20 @@ start" is on. On macOS, use the Bluetooth device name, because macOS does
 not expose Bluetooth addresses.
 
 Only one client can use a radio's Bluetooth link at a time. Disconnect
-the phone app before you connect Retkerno.
+the phone app before you connect Hedgerow.
 
 ## Data
 
-Data lives in `$RETKERNO_DATA_DIR`, default `~/.local/share/retkerno`
+Data lives in `$HEDGEROW_DATA_DIR`, default `~/.local/share/hedgerow`
 (the platform data directory on macOS and Windows):
 
 - `config.toml`: the connection settings and UI options.
-- `retkerno.db`: the message history, contacts, and channels, scoped by
+- `hedgerow.db`: the message history, contacts, and channels, scoped by
   the radio's public key.
 
 The radio holds incoming messages in a queue until a client fetches them.
-Retkerno fetches them and stores them in `retkerno.db`. After that, the
-phone app does not get them. Back up `retkerno.db` if the history matters
+Hedgerow fetches them and stores them in `hedgerow.db`. After that, the
+phone app does not get them. Back up `hedgerow.db` if the history matters
 to you.
 
 ```toml
@@ -123,16 +123,16 @@ decorations = "auto"       # "auto", "on", or "off"
 
 ## UI test mode
 
-`RETKERNO_UI_TEST=1 retkerno` runs on an in-memory store with a fake
+`HEDGEROW_UI_TEST=1 hedgerow` runs on an in-memory store with a fake
 radio full of demo data. It never reads or writes the config, and it never
 touches Bluetooth or serial ports. These variables help with automated
 checks:
 
 | Variable | Effect |
 |---|---|
-| `RETKERNO_EXIT_AFTER_MS=<n>` | Exit with code 0 after n milliseconds. |
-| `RETKERNO_DUMP_TEXT=<path>` | Before that exit, write the page text to `<path>` and the main view's text to `<path>.main`. |
-| `RETKERNO_START_VIEW=<view>` | Open `thread:channel:<idx>`, `thread:contact:<prefix>`, `contacts`, or `settings:<connection\|device\|channels>`. |
+| `HEDGEROW_EXIT_AFTER_MS=<n>` | Exit with code 0 after n milliseconds. |
+| `HEDGEROW_DUMP_TEXT=<path>` | Before that exit, write the page text to `<path>` and the main view's text to `<path>.main`. |
+| `HEDGEROW_START_VIEW=<view>` | Open `thread:channel:<idx>`, `thread:contact:<prefix>`, `contacts`, or `settings:<connection\|device\|channels>`. |
 
 ## Hardware check
 
@@ -141,7 +141,7 @@ the contact count, and the radio's own contact URI, then prints JSON. It
 changes nothing on the radio.
 
 ```sh
-cargo run -p retkerno-core --example probe -- --ble AA:BB:CC:DD:EE:FF
+cargo run -p hedgerow-core --example probe -- --ble AA:BB:CC:DD:EE:FF
 ```
 
 ## Known limitations

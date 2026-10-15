@@ -6,9 +6,9 @@
 //! --tcp <host:port>]`. With no arguments it uses the saved connection
 //! settings. Channel secrets are never printed.
 
-use retkerno_core::config::Config;
-use retkerno_core::radio::{ConnectTarget, Radio};
-use retkerno_core::{Error, Result};
+use hedgerow_core::config::Config;
+use hedgerow_core::radio::{ConnectTarget, Radio};
+use hedgerow_core::{Error, Result};
 use serde_json::{Value, json};
 
 /// Channel slots to read when the device does not report a count.

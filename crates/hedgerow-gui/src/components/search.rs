@@ -1,7 +1,7 @@
 //! The message search results shown in the main region.
 
 use dioxus::prelude::*;
-use retkerno_core::model::{Message, ThreadId, ThreadSummary};
+use hedgerow_core::model::{Message, ThreadId, ThreadSummary};
 
 use crate::app::{ChatTarget, Ui};
 use crate::format;

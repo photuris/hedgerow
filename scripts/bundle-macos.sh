@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/Retkerno.app on macOS: release binary, Info.plist, ad-hoc signature.
+# Builds dist/Hedgerow.app on macOS: release binary, Info.plist, ad-hoc signature.
 # The Info.plist must carry NSBluetoothAlwaysUsageDescription, or macOS kills the
 # app the first time it touches CoreBluetooth.
 set -euo pipefail
@@ -12,13 +12,13 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-app=dist/Retkerno.app
+app=dist/Hedgerow.app
 
-cargo build --release --locked -p retkerno-gui
+cargo build --release --locked -p hedgerow-gui
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/retkerno "$app/Contents/MacOS/retkerno"
+cp target/release/hedgerow "$app/Contents/MacOS/hedgerow"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,13 +26,13 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Retkerno</string>
+    <string>Hedgerow</string>
     <key>CFBundleDisplayName</key>
-    <string>Retkerno</string>
+    <string>Hedgerow</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.photuris.retkerno</string>
+    <string>io.github.photuris.hedgerow</string>
     <key>CFBundleExecutable</key>
-    <string>retkerno</string>
+    <string>hedgerow</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -44,7 +44,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>Retkerno connects to your MeshCore radio over Bluetooth.</string>
+    <string>Hedgerow connects to your MeshCore radio over Bluetooth.</string>
 </dict>
 </plist>
 PLIST

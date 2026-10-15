@@ -1,9 +1,9 @@
 //! The message box under a conversation.
 
 use dioxus::prelude::*;
-use retkerno_core::model::ThreadId;
-use retkerno_core::session::{Command, ConnState, Guard};
-use retkerno_core::text;
+use hedgerow_core::model::ThreadId;
+use hedgerow_core::session::{Command, ConnState, Guard};
+use hedgerow_core::text;
 
 use crate::app::Ui;
 

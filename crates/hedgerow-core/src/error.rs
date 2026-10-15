@@ -1,6 +1,6 @@
-//! Error type shared by every retkerno-core module.
+//! Error type shared by every hedgerow-core module.
 
-/// Everything that can go wrong in retkerno-core.
+/// Everything that can go wrong in hedgerow-core.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Filesystem failure.

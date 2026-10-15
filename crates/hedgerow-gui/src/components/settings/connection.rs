@@ -1,9 +1,9 @@
 //! The Connection tab: transport, target, and the connect buttons.
 
 use dioxus::prelude::*;
-use retkerno_core::config::Transport;
-use retkerno_core::radio::Radio;
-use retkerno_core::session::{Command, ConnState};
+use hedgerow_core::config::Transport;
+use hedgerow_core::radio::Radio;
+use hedgerow_core::session::{Command, ConnState};
 
 use crate::app::Ui;
 

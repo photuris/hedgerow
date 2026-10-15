@@ -2,7 +2,7 @@
 //! duplicate channel secrets, and node-scoped read markers.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use retkerno_core::{model::*, store::Store};
+use hedgerow_core::{model::*, store::Store};
 
 fn incoming(idx: u8) -> NewMessage {
     NewMessage {

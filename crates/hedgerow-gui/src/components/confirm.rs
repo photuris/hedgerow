@@ -2,8 +2,8 @@
 //! and [`Pending`], the state of a confirmation that sends a radio command.
 
 use dioxus::prelude::*;
-use retkerno_core::model::DeviceInfo;
-use retkerno_core::session::{Command, ConnState, Guard};
+use hedgerow_core::model::DeviceInfo;
+use hedgerow_core::session::{Command, ConnState, Guard};
 
 use crate::app::{Ui, connected_node};
 

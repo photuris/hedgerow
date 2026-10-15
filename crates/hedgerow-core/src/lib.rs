@@ -1,4 +1,4 @@
-//! Retkerno core: every piece of logic in the MeshCore client lives in this
+//! Hedgerow core: every piece of logic in the MeshCore client lives in this
 //! crate (model, text rules, config, the SQLite message store, the radio
 //! layer, and the session actor), and the GUI is only a view over it.
 #![warn(missing_docs)]

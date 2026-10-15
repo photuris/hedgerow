@@ -6,16 +6,16 @@
 
 use std::time::Duration;
 
-use retkerno_core::config::ConnectionConfig;
-use retkerno_core::model::{
+use hedgerow_core::config::ConnectionConfig;
+use hedgerow_core::model::{
     Channel, Contact, ContactKind, DeliveryStatus, DeviceInfo, Direction, NewMessage, ThreadId,
 };
-use retkerno_core::radio::{
+use hedgerow_core::radio::{
     DeviceSettings, FakeFailure, FakeRadio, FakeSent, IncomingMessage, RadioEvent,
 };
-use retkerno_core::session::{Command, ConnState, Connector, Guard, Session, Update};
-use retkerno_core::store::Store;
-use retkerno_core::text;
+use hedgerow_core::session::{Command, ConnState, Connector, Guard, Session, Update};
+use hedgerow_core::store::Store;
+use hedgerow_core::text;
 use tokio::sync::broadcast::Receiver;
 use tokio::time::Instant;
 

@@ -1,4 +1,4 @@
-//! Configuration stored as TOML in the Retkerno data directory.
+//! Configuration stored as TOML in the Hedgerow data directory.
 
 use std::ffi::OsString;
 use std::fs;
@@ -12,17 +12,17 @@ use crate::error::{Error, Result};
 /// File name of the configuration inside [`data_dir`].
 const CONFIG_FILE: &str = "config.toml";
 
-/// Returns `$RETKERNO_DATA_DIR`, else `dirs::data_dir()/retkerno`.
+/// Returns `$HEDGEROW_DATA_DIR`, else `dirs::data_dir()/hedgerow`.
 ///
 /// The environment is read on every call.
 pub fn data_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("RETKERNO_DATA_DIR") {
+    if let Some(dir) = std::env::var_os("HEDGEROW_DATA_DIR") {
         return PathBuf::from(dir);
     }
 
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("retkerno")
+        .join("hedgerow")
 }
 
 /// How the client reaches the radio.

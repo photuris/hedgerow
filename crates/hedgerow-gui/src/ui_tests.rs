@@ -22,11 +22,11 @@ use dioxus::html::{
     SerializedKeyboardData, SerializedMouseData,
 };
 use dioxus::prelude::*;
-use retkerno_core::config::Config;
-use retkerno_core::model::{DeliveryStatus, Direction, NewMessage, ThreadId};
-use retkerno_core::radio::{FakeRadio, FakeSent};
-use retkerno_core::session::{Command, ConnState};
-use retkerno_core::store::Store;
+use hedgerow_core::config::Config;
+use hedgerow_core::model::{DeliveryStatus, Direction, NewMessage, ThreadId};
+use hedgerow_core::radio::{FakeRadio, FakeSent};
+use hedgerow_core::session::{Command, ConnState};
+use hedgerow_core::store::Store;
 
 use crate::app::{App, Boot, Hooks, Ui, View, now_secs};
 
@@ -333,12 +333,12 @@ fn in_app<R>(dom: &VirtualDom, f: impl FnOnce() -> R) -> R {
     dom.runtime().in_scope(ScopeId::APP, f)
 }
 
-/// Starts the app on `view` (a `RETKERNO_START_VIEW` value) over the demo
+/// Starts the app on `view` (a `HEDGEROW_START_VIEW` value) over the demo
 /// radio and waits for the connection.
 async fn setup(view: &str) -> (VirtualDom, Ui, FakeRadio) {
     dioxus::html::set_event_converter(Box::new(SerializedHtmlEventConverter));
 
-    let fake = retkerno_core::fixtures::demo_radio();
+    let fake = hedgerow_core::fixtures::demo_radio();
     let boot = Boot {
         store: Store::open_memory().unwrap(),
         config: Config::default(),
@@ -364,7 +364,7 @@ async fn setup(view: &str) -> (VirtualDom, Ui, FakeRadio) {
 }
 
 /// The connected device's report.
-fn device(ui: &Ui) -> retkerno_core::model::DeviceInfo {
+fn device(ui: &Ui) -> hedgerow_core::model::DeviceInfo {
     match ui.state.peek().clone() {
         ConnState::Connected(device) => device,
         other => panic!("not connected: {other:?}"),
@@ -548,7 +548,7 @@ async fn channel_commands_and_modal_close() {
     assert_eq!(added.idx, 3);
     assert_eq!(
         added.secret,
-        retkerno_core::text::hashtag_secret("#smoke").unwrap()
+        hedgerow_core::text::hashtag_secret("#smoke").unwrap()
     );
 
     // Pick the Remove button of the new row: the first one after its name.
@@ -1335,7 +1335,7 @@ async fn r2_retry_refuses_stale_node() {
     let textarea = open_composer(&mut dom, &ui).await;
     fake.state().fail_call = Some((
         "send_channel_text".into(),
-        retkerno_core::radio::FakeFailure::Rejected("test".into()),
+        hedgerow_core::radio::FakeFailure::Rejected("test".into()),
     ));
     type_into(&dom, &textarea, "failed draft on A");
     press_enter(&dom, &textarea);
@@ -1428,7 +1428,7 @@ async fn r2_retry_refuses_replaced_channel() {
     let textarea = open_composer(&mut dom, &ui).await;
     fake.state().fail_call = Some((
         "send_channel_text".into(),
-        retkerno_core::radio::FakeFailure::Rejected("test".into()),
+        hedgerow_core::radio::FakeFailure::Rejected("test".into()),
     ));
     type_into(&dom, &textarea, "failed on Public");
     press_enter(&dom, &textarea);
@@ -1590,7 +1590,7 @@ fn marks(dom: &VirtualDom) -> Vec<String> {
 }
 
 /// The newest stored message of the demo node that contains `needle`.
-fn found(ui: &Ui, needle: &str) -> retkerno_core::model::Message {
+fn found(ui: &Ui, needle: &str) -> hedgerow_core::model::Message {
     let node = ui.node.peek().clone().unwrap();
 
     ui.store

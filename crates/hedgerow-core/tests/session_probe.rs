@@ -3,14 +3,14 @@
 
 use std::time::Duration;
 
-use retkerno_core::config::{ConnectionConfig, Transport};
-use retkerno_core::model::{
+use hedgerow_core::config::{ConnectionConfig, Transport};
+use hedgerow_core::model::{
     Channel, Contact, ContactKind, DeliveryStatus, DeviceInfo, Direction, ThreadId,
 };
-use retkerno_core::radio::{ConnectTarget, DeviceSettings, FakeRadio, IncomingMessage, RadioEvent};
-use retkerno_core::session::{Command, ConnState, Connector, Session, Update};
-use retkerno_core::store::Store;
-use retkerno_core::text;
+use hedgerow_core::radio::{ConnectTarget, DeviceSettings, FakeRadio, IncomingMessage, RadioEvent};
+use hedgerow_core::session::{Command, ConnState, Connector, Session, Update};
+use hedgerow_core::store::Store;
+use hedgerow_core::text;
 
 const NODE: &str = "aa00000000000000000000000000000000000000000000000000000000000000";
 const PEER: &str = "0a0b0c0d0e0f0000000000000000000000000000000000000000000000000000";
@@ -280,7 +280,7 @@ async fn probe_dm_ack_and_timeout() {
     })
     .await;
     let ack = match &f.state().sent[0] {
-        retkerno_core::radio::FakeSent::Text {
+        hedgerow_core::radio::FakeSent::Text {
             prefix, text, ack, ..
         } => {
             assert_eq!((prefix.as_str(), text.as_str()), (&PEER[..12], "hello"));

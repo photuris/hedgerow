@@ -1,11 +1,11 @@
-# Retkerno: notes for agents
+# Hedgerow: notes for agents
 
 Read `README.md` first. This file holds what the code does not say.
 
 ## Shape
 
-- Rust workspace, edition 2024. `retkerno-core` holds all logic.
-  `retkerno-gui` is a view: it sends `session::Command`s and re-reads the
+- Rust workspace, edition 2024. `hedgerow-core` holds all logic.
+  `hedgerow-gui` is a view: it sends `session::Command`s and re-reads the
   `Store` when the session broadcasts `Update::StoreChanged`. The GUI never
   talks to the radio.
 - `radio::Radio` is an enum: `Mesh` wraps `meshcore_rs::MeshCore`, `Fake`
@@ -15,7 +15,7 @@ Read `README.md` first. This file holds what the code does not say.
   The actor keeps handling commands while it is pending.
 - The original build plan and its review history are in the gitignored
   overseer ledger (`.overseer/runs/2026-10-14-mvp/`), present on the
-  original machine. The doc comments in `crates/retkerno-core/src` are the
+  original machine. The doc comments in `crates/hedgerow-core/src` are the
   live contract.
 
 ## Rules that bit us
@@ -26,7 +26,7 @@ Read `README.md` first. This file holds what the code does not say.
 - **Never drive the desktop session.** No `hyprctl`, `wtype`, `ydotool`,
   cursor or focus tools. An agent's `hyprctl repl` call crashed the
   owner's Hyprland once. Test UI behavior with headless Dioxus VDOM tests
-  (`crates/retkerno-gui/src/ui_tests.rs`).
+  (`crates/hedgerow-gui/src/ui_tests.rs`).
 - The store is history, not a cache. Messages pulled off the radio queue
   exist nowhere else. Schema changes migrate forward. Never drop tables.
 - Everything in the store is scoped by node id, the radio's 64-hex public
@@ -66,5 +66,5 @@ A GUI smoke run opens a real window. Do it only when a person is watching
 the screen:
 
 ```sh
-RETKERNO_UI_TEST=1 RETKERNO_EXIT_AFTER_MS=4000 cargo run -p retkerno-gui
+HEDGEROW_UI_TEST=1 HEDGEROW_EXIT_AFTER_MS=4000 cargo run -p hedgerow-gui
 ```

@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use dioxus::prelude::*;
-use retkerno_core::model::{DeliveryStatus, Direction, Message, ThreadId};
-use retkerno_core::session::{Command, Guard};
-use retkerno_core::store::Store;
+use hedgerow_core::model::{DeliveryStatus, Direction, Message, ThreadId};
+use hedgerow_core::session::{Command, Guard};
+use hedgerow_core::store::Store;
 
 use super::composer::Composer;
 use crate::app::{Ui, should_mark_read, window_focused};

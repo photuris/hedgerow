@@ -2,8 +2,8 @@
 //! import and export dialogs.
 
 use dioxus::prelude::*;
-use retkerno_core::model::{Contact, ContactKind, ThreadId};
-use retkerno_core::session::{Command, Guard};
+use hedgerow_core::model::{Contact, ContactKind, ThreadId};
+use hedgerow_core::session::{Command, Guard};
 
 use super::confirm::{Confirm, Modal, Pending, use_pending};
 use crate::app::{Ui, connected_node};

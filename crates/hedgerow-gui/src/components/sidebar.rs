@@ -1,8 +1,8 @@
 //! The sidebar: connection chip, conversation lists, and navigation.
 
 use dioxus::prelude::*;
-use retkerno_core::model::{ThreadId, ThreadSummary};
-use retkerno_core::session::ConnState;
+use hedgerow_core::model::{ThreadId, ThreadSummary};
+use hedgerow_core::session::ConnState;
 
 use super::Icon;
 use crate::app::{SettingsTab, Ui, View, keep_typing};

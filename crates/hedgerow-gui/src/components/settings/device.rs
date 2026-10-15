@@ -1,10 +1,10 @@
 //! The Device tab: what the radio reports, and the form that changes it.
 
 use dioxus::prelude::*;
-use retkerno_core::Error;
-use retkerno_core::model::DeviceInfo;
-use retkerno_core::radio::DeviceSettings;
-use retkerno_core::session::{Command, ConnState, Guard};
+use hedgerow_core::Error;
+use hedgerow_core::model::DeviceInfo;
+use hedgerow_core::radio::DeviceSettings;
+use hedgerow_core::session::{Command, ConnState, Guard};
 
 use crate::app::Ui;
 use crate::components::confirm::{Confirm, Pending, use_pending};

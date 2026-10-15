@@ -1,5 +1,5 @@
 [package]
-name = "retkerno-core"
+name = "hedgerow-core"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

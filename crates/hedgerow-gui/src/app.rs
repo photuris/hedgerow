@@ -7,12 +7,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
-use retkerno_core::config::Config;
-use retkerno_core::model::{Channel, ThreadId};
-use retkerno_core::radio::FakeRadio;
-use retkerno_core::session::{Command, ConnState, Connector, Guard, Session, Update};
-use retkerno_core::store::Store;
-use retkerno_core::text;
+use hedgerow_core::config::Config;
+use hedgerow_core::model::{Channel, ThreadId};
+use hedgerow_core::radio::FakeRadio;
+use hedgerow_core::session::{Command, ConnState, Connector, Guard, Session, Update};
+use hedgerow_core::store::Store;
+use hedgerow_core::text;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -42,11 +42,11 @@ pub const MIN_SEARCH_CHARS: usize = 2;
 /// The test hooks, read from the environment once in `main`.
 #[derive(Clone, Default)]
 pub struct Hooks {
-    /// `RETKERNO_EXIT_AFTER_MS`: exit after this many milliseconds.
+    /// `HEDGEROW_EXIT_AFTER_MS`: exit after this many milliseconds.
     pub exit_after_ms: Option<u64>,
-    /// `RETKERNO_DUMP_TEXT`: write the page text here before exiting.
+    /// `HEDGEROW_DUMP_TEXT`: write the page text here before exiting.
     pub dump_text: Option<PathBuf>,
-    /// `RETKERNO_START_VIEW`: the initial view, see [`View::parse_start`].
+    /// `HEDGEROW_START_VIEW`: the initial view, see [`View::parse_start`].
     pub start_view: Option<String>,
 }
 
@@ -90,7 +90,7 @@ pub enum View {
 }
 
 impl View {
-    /// Parses `RETKERNO_START_VIEW`: `contacts`,
+    /// Parses `HEDGEROW_START_VIEW`: `contacts`,
     /// `settings:connection|device|channels`, `thread:channel:<idx>`, or
     /// `thread:contact:<prefix>`. Anything else is `None`.
     pub fn parse_start(s: &str) -> Option<View> {
@@ -177,12 +177,12 @@ pub(crate) fn keep_typing(evt: &KeyboardEvent) {
     }
 }
 
-/// The window title: `Retkerno`, or `(N) Retkerno` with unread messages.
+/// The window title: `Hedgerow`, or `(N) Hedgerow` with unread messages.
 pub fn window_title(unread: u32) -> String {
     if unread == 0 {
-        "Retkerno".to_string()
+        "Hedgerow".to_string()
     } else {
-        format!("({unread}) Retkerno")
+        format!("({unread}) Hedgerow")
     }
 }
 
@@ -452,7 +452,7 @@ impl Ui {
     }
 
     /// Logs a failed store write and tells the user.
-    fn report(&self, what: &str, error: &retkerno_core::Error) {
+    fn report(&self, what: &str, error: &hedgerow_core::Error) {
         tracing::warn!("{what}: {error}");
         self.show_toast(format!("{what}: {error}"));
     }
@@ -965,7 +965,7 @@ async fn run_exit_hook(ms: u64, dump: Option<PathBuf>) {
         Err(_) => "timed out".to_string(),
     };
 
-    eprintln!("retkerno: dump failed: {failure}");
+    eprintln!("hedgerow: dump failed: {failure}");
     std::process::exit(2);
 }
 
@@ -1000,7 +1000,7 @@ fn BaseStyle() -> Element {
 
 #[cfg(test)]
 mod tests {
-    use retkerno_core::fixtures;
+    use hedgerow_core::fixtures;
 
     use super::*;
 
@@ -1177,12 +1177,12 @@ mod tests {
 
         #[test]
         fn should_be_plain_without_unread() {
-            assert_eq!(window_title(0), "Retkerno");
+            assert_eq!(window_title(0), "Hedgerow");
         }
 
         #[test]
         fn should_lead_with_the_unread_count() {
-            assert_eq!(window_title(7), "(7) Retkerno");
+            assert_eq!(window_title(7), "(7) Hedgerow");
         }
     }
 

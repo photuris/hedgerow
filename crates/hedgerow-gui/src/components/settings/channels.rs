@@ -1,9 +1,9 @@
 //! The Channels tab: the stored channel slots, and a form to add one.
 
 use dioxus::prelude::*;
-use retkerno_core::model::Channel;
-use retkerno_core::session::{Command, ConnState, Guard};
-use retkerno_core::text::{self, PUBLIC_CHANNEL_SECRET, hashtag_secret};
+use hedgerow_core::model::Channel;
+use hedgerow_core::session::{Command, ConnState, Guard};
+use hedgerow_core::text::{self, PUBLIC_CHANNEL_SECRET, hashtag_secret};
 
 use super::device::current_device;
 use crate::app::{Ui, connected_node};

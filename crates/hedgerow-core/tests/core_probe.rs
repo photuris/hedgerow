@@ -1,13 +1,13 @@
 //! Overseer-owned black-box probe for task 001. Do not edit.
 #![allow(clippy::unwrap_used, clippy::cloned_ref_to_slice_refs)]
 
-use retkerno_core::Error;
-use retkerno_core::config::{Config, Transport};
-use retkerno_core::model::{
+use hedgerow_core::Error;
+use hedgerow_core::config::{Config, Transport};
+use hedgerow_core::model::{
     Channel, Contact, ContactKind, DeliveryStatus, DeviceInfo, Direction, NewMessage, ThreadId,
 };
-use retkerno_core::store::Store;
-use retkerno_core::text;
+use hedgerow_core::store::Store;
+use hedgerow_core::text;
 
 const NODE: &str = "aa00000000000000000000000000000000000000000000000000000000000000";
 const OTHER: &str = "bb00000000000000000000000000000000000000000000000000000000000000";
@@ -441,7 +441,7 @@ fn probe_store_contacts_channels_device() {
 #[test]
 fn probe_store_persists_and_guards_schema() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("retkerno.db");
+    let path = dir.path().join("hedgerow.db");
     {
         let s = Store::open(&path).unwrap();
         s.insert_message(NODE, &incoming(ThreadId::Channel(0), Some("A"), "kept", 1))
