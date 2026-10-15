@@ -8,13 +8,33 @@ use futures::stream::StreamExt;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::RwLock;
 use uuid::Uuid;
+
+use crate::events::EventDispatcher;
 
 // MeshCore BLE service and characteristic UUIDs
 // These are the standard UUIDs used by MeshCore devices
 const MESHCORE_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
 const MESHCORE_TX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
 const MESHCORE_RX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
+
+/// Marks the client disconnected and emits `Disconnected`, but only for the
+/// caller that flips `connected` from true to false under the write lock. The
+/// write task and the read task both call this for one lost link; the loser
+/// emits nothing.
+async fn lose_link(connected: &RwLock<bool>, dispatcher: &EventDispatcher) {
+    let won = std::mem::replace(&mut *connected.write().await, false);
+
+    if won {
+        dispatcher
+            .emit(MeshCoreEvent::new(
+                EventType::Disconnected,
+                EventPayload::None,
+            ))
+            .await;
+    }
+}
 
 impl MeshCore {
     /// Find MeshCore radios on BTLE upto the time specified by `scan_duration` and return their names
@@ -225,6 +245,10 @@ impl MeshCore {
         let peripheral = Self::find_peripheral(name).await?;
         let (meshcore, mut rx, tx_char) = Self::ble_connect_peripheral(&peripheral).await?;
 
+        // Connected before the tasks can lose the link: `lose_link` only
+        // emits for the task that flips this flag from true to false.
+        *meshcore.connected.write().await = true;
+
         // Clone peripheral for tasks
         let peripheral_write = peripheral.clone();
         let peripheral_read = peripheral.clone();
@@ -232,7 +256,7 @@ impl MeshCore {
         // Spawn write task
         // BLE does NOT use framing - send raw payload directly (unlike serial which uses [0x3c][len][payload])
         // The first write error marks the client disconnected, emits
-        // Disconnected once, and ends the task. Dropping `rx` makes later
+        // Disconnected (unless the read task already did), and ends the task. Dropping `rx` makes later
         // sends fail fast instead of queueing.
         let write_connected = meshcore.connected.clone();
         let write_dispatcher = meshcore.dispatcher.clone();
@@ -249,13 +273,7 @@ impl MeshCore {
                         Ok(_) => tracing::trace!("BLE TX chunk: {} bytes sent", chunk.len()),
                         Err(e) => {
                             tracing::error!("BLE TX error: {}", e);
-                            *write_connected.write().await = false;
-                            write_dispatcher
-                                .emit(MeshCoreEvent::new(
-                                    EventType::Disconnected,
-                                    EventPayload::None,
-                                ))
-                                .await;
+                            lose_link(&write_connected, &write_dispatcher).await;
                             return;
                         }
                     }
@@ -272,13 +290,7 @@ impl MeshCore {
             let mut notification_stream = match peripheral_read.notifications().await {
                 Ok(stream) => stream,
                 Err(_) => {
-                    *connected.write().await = false;
-                    dispatcher
-                        .emit(MeshCoreEvent::new(
-                            EventType::Disconnected,
-                            EventPayload::None,
-                        ))
-                        .await;
+                    lose_link(&connected, &dispatcher).await;
                     return;
                 }
             };
@@ -302,22 +314,55 @@ impl MeshCore {
             }
 
             // Notification stream ended - disconnected
-            *connected.write().await = false;
-            dispatcher
-                .emit(MeshCoreEvent::new(
-                    EventType::Disconnected,
-                    EventPayload::None,
-                ))
-                .await;
+            lose_link(&connected, &dispatcher).await;
         });
 
         meshcore.tasks.lock().await.push(write_task);
         meshcore.tasks.lock().await.push(read_task);
 
-        *meshcore.connected.write().await = true;
-
         meshcore.setup_event_handlers().await;
 
         Ok(meshcore)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The number of `Disconnected` events waiting on `events`.
+    fn disconnects(events: &mut tokio::sync::broadcast::Receiver<MeshCoreEvent>) -> usize {
+        let mut count = 0;
+
+        while let Ok(event) = events.try_recv() {
+            if event.event_type == EventType::Disconnected {
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    #[tokio::test]
+    async fn lose_link_emits_one_disconnected_when_both_tasks_report_one_loss() {
+        let dispatcher = EventDispatcher::new();
+        let mut events = dispatcher.receiver();
+        let connected = RwLock::new(true);
+
+        lose_link(&connected, &dispatcher).await;
+        lose_link(&connected, &dispatcher).await;
+
+        assert!(!*connected.read().await);
+        assert_eq!(disconnects(&mut events), 1);
+    }
+
+    #[tokio::test]
+    async fn lose_link_emits_nothing_when_already_disconnected() {
+        let dispatcher = EventDispatcher::new();
+        let mut events = dispatcher.receiver();
+
+        lose_link(&RwLock::new(false), &dispatcher).await;
+
+        assert_eq!(disconnects(&mut events), 0);
     }
 }

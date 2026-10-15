@@ -20,12 +20,18 @@ the changes listed here differ from the published crate.
   dispatched in between was lost, and a full send queue blocked past the
   timeout. Public signatures, event filtering, and the timeout error
   (`Error::timeout`) are unchanged.
-- `src/meshcore/ble.rs`, `MeshCore::ble_connect`, write task: the first
-  write error now sets the client's `connected` flag to false, emits
-  `EventType::Disconnected` once through the dispatcher, and ends the task
-  (dropping the send queue, so later sends fail fast). The published crate
-  logged the error, broke out of the chunk loop only, and kept running, so
-  the client stayed "connected" while every command timed out.
+- `src/meshcore/ble.rs`, `MeshCore::ble_connect`, write and read tasks
+  (new private helper `lose_link`, unit tests in `ble::tests`): the first
+  write error, a failure to open the notification stream, or the end of
+  that stream sets the client's `connected` flag to false and emits
+  `EventType::Disconnected`, but only for the task that flips the flag from
+  true to false under its write lock; the other emits nothing, so one lost
+  link gives one event. The write task then ends (dropping the send queue,
+  so later sends fail fast). `connected` is now set to true before the
+  tasks are spawned, so a link that fails at once still counts as a
+  transition. The published crate logged the error, broke out of the chunk
+  loop only, and kept running, so the client stayed "connected" while
+  every command timed out.
 
 ## Known, not patched
 
