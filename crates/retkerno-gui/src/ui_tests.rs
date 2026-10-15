@@ -1900,3 +1900,174 @@ async fn search_shortening_the_text_returns_to_the_previous_view() {
     assert_eq!(*ui.view.peek(), View::Contacts);
     assert_eq!(value_of(&dom, "sidebar-search").as_deref(), Some("a"));
 }
+
+// ── 012: review fixes ───────────────────────────────────────────────────────
+
+/// Unread count of `thread` on `node`.
+fn unread_of(ui: &Ui, node: &str, thread: &ThreadId) -> u32 {
+    ui.store
+        .threads(node)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.thread == *thread)
+        .unwrap()
+        .unread
+}
+
+#[tokio::test]
+async fn search_result_drawn_for_another_node_opens_nothing_and_marks_nothing_read() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+
+    search_for(&mut dom, "antenna").await;
+
+    let hit = results(&dom)[0].clone();
+    let thread = found(&ui, "antenna").thread;
+
+    ui.session.send(Command::Disconnect);
+    wait_session(&ui, |s| *s == ConnState::Disconnected).await;
+    fake.state().device.node_id = other_node();
+    ui.session.send(Command::Connect);
+    wait_session(
+        &ui,
+        |s| matches!(s, ConnState::Connected(d) if d.node_id == other_node()),
+    )
+    .await;
+
+    let mut unread = incoming("B has private unread history");
+
+    unread.thread = thread.clone();
+    ui.store.insert_message(&other_node(), &unread).unwrap();
+    assert_eq!(unread_of(&ui, &other_node(), &thread), 1);
+
+    // Apply B's state without rendering new results: A's result stays live.
+    in_app(&dom, || ui.apply_state(ui.session.state()));
+    click(&dom, &hit);
+    settle(&mut dom).await;
+
+    assert_eq!(unread_of(&ui, &other_node(), &thread), 1);
+    assert!(matches!(*ui.view.peek(), View::Search(_)));
+    assert_eq!(
+        ui.toast.peek().as_deref(),
+        Some("The radio changed; action cancelled")
+    );
+}
+
+#[tokio::test]
+async fn search_result_for_a_replaced_channel_opens_nothing_and_marks_nothing_read() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = ui.node.peek().clone().unwrap();
+
+    ui.store
+        .insert_message(&node, &incoming("zebra crossing"))
+        .unwrap();
+    search_for(&mut dom, "zebra").await;
+
+    let hit = results(&dom)[0].clone();
+    let mut channels = ui.store.channels(&node).unwrap();
+
+    channels[0].secret = [0xEE; 16];
+    ui.store.replace_channels(&node, &channels).unwrap();
+    ui.store
+        .insert_message(&node, &incoming("fresh unread in the new channel"))
+        .unwrap();
+    click(&dom, &hit);
+    settle(&mut dom).await;
+
+    assert!(matches!(*ui.view.peek(), View::Search(_)));
+    assert_eq!(
+        unread_of(&ui, &node, &ThreadId::Channel(0)),
+        1,
+        "the new channel's unread must stay"
+    );
+    assert_eq!(
+        ui.toast.peek().as_deref(),
+        Some("The radio changed; action cancelled")
+    );
+}
+
+#[tokio::test]
+async fn ctrl_b_in_the_composer_leaves_the_sidebar_open() {
+    let (mut dom, _ui, _fake) = setup("thread:channel:0").await;
+
+    key_down_with(
+        &dom,
+        &first_tag(&dom, "textarea"),
+        Key::Character("b".into()),
+        Code::KeyB,
+        Modifiers::CONTROL,
+    );
+    settle(&mut dom).await;
+
+    assert!(sidebar_shown(&dom), "Ctrl+B from the composer collapsed it");
+}
+
+#[tokio::test]
+async fn ctrl_b_in_a_settings_input_leaves_the_sidebar_open() {
+    let (mut dom, _ui, _fake) = setup("settings:device").await;
+
+    key_down_with(
+        &dom,
+        &first_tag(&dom, "input"),
+        Key::Character("b".into()),
+        Code::KeyB,
+        Modifiers::CONTROL,
+    );
+    settle(&mut dom).await;
+
+    assert!(sidebar_shown(&dom), "Ctrl+B from an input collapsed it");
+}
+
+#[tokio::test]
+async fn ctrl_b_in_the_search_box_leaves_the_sidebar_open() {
+    let (mut dom, _ui, _fake) = setup("contacts").await;
+
+    key_down_with(
+        &dom,
+        &by_id(&dom, "sidebar-search"),
+        Key::Character("b".into()),
+        Code::KeyB,
+        Modifiers::CONTROL,
+    );
+    settle(&mut dom).await;
+
+    assert!(sidebar_shown(&dom));
+}
+
+#[tokio::test]
+async fn ctrl_f_in_the_composer_asks_the_search_box_for_focus() {
+    let (mut dom, ui, _fake) = setup("thread:channel:0").await;
+
+    in_app(&dom, || ui.toggle_sidebar());
+    settle(&mut dom).await;
+    assert!(sidebar_gone(&dom));
+
+    key_down_with(
+        &dom,
+        &first_tag(&dom, "textarea"),
+        Key::Character("f".into()),
+        Code::KeyF,
+        Modifiers::CONTROL,
+    );
+
+    assert!(
+        *ui.focus_search.peek(),
+        "Ctrl+F from the composer is ignored"
+    );
+
+    settle(&mut dom).await;
+
+    assert!(sidebar_shown(&dom));
+}
+
+#[tokio::test]
+async fn ctrl_b_outside_inputs_still_toggles_the_sidebar() {
+    let (mut dom, _ui, _fake) = setup("thread:channel:0").await;
+
+    ctrl(&dom, "b");
+    settle(&mut dom).await;
+    assert!(sidebar_gone(&dom));
+
+    ctrl(&dom, "b");
+    settle(&mut dom).await;
+    assert!(sidebar_shown(&dom));
+}

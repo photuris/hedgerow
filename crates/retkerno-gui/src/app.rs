@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 use retkerno_core::config::Config;
-use retkerno_core::model::ThreadId;
+use retkerno_core::model::{Channel, ThreadId};
 use retkerno_core::radio::FakeRadio;
 use retkerno_core::session::{Command, ConnState, Connector, Guard, Session, Update};
 use retkerno_core::store::Store;
@@ -167,6 +167,16 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
     }
 }
 
+/// Keeps Ctrl+B from reaching the app-level shortcut handler. Mounted where
+/// text is typed: a keyboard event carries no target element, so the fields
+/// cannot be told apart from their pane. Ctrl+F is left alone, because it
+/// works from anywhere.
+pub(crate) fn keep_typing(evt: &KeyboardEvent) {
+    if shortcut(&evt.key(), evt.modifiers()) == Some(Shortcut::ToggleSidebar) {
+        evt.stop_propagation();
+    }
+}
+
 /// The window title: `Retkerno`, or `(N) Retkerno` with unread messages.
 pub fn window_title(unread: u32) -> String {
     if unread == 0 {
@@ -200,7 +210,7 @@ pub fn connected_node(state: &ConnState) -> Option<String> {
 /// What a mounted [`Chat`] belongs to: its node and, for a channel thread,
 /// the secret of the slot's occupant when the chat was opened.
 #[derive(Clone, Debug, PartialEq)]
-struct ChatTarget {
+pub(crate) struct ChatTarget {
     /// The open thread.
     thread: ThreadId,
     /// The node whose data the chat shows.
@@ -213,14 +223,23 @@ struct ChatTarget {
 impl ChatTarget {
     /// Reads the target of `thread` on `node` from the store.
     fn of(store: &Store, node: Option<String>, thread: ThreadId) -> ChatTarget {
-        let secret = match (&thread, &node) {
-            (ThreadId::Channel(idx), Some(node)) => store
-                .channels(node)
-                .unwrap_or_default()
-                .iter()
-                .find(|c| c.idx == *idx)
-                .map(|c| c.secret),
-            _ => None,
+        let channels = match (&thread, &node) {
+            (ThreadId::Channel(_), Some(node)) => store.channels(node).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
+        ChatTarget::in_channels(&channels, node, thread)
+    }
+
+    /// The target of `thread` on `node` given the node's stored `channels`.
+    pub(crate) fn in_channels(
+        channels: &[Channel],
+        node: Option<String>,
+        thread: ThreadId,
+    ) -> ChatTarget {
+        let secret = match &thread {
+            ThreadId::Channel(idx) => channels.iter().find(|c| c.idx == *idx).map(|c| c.secret),
+            ThreadId::Contact(_) => None,
         };
 
         ChatTarget {
@@ -493,11 +512,27 @@ impl Ui {
         reveal.set(None);
     }
 
-    /// Opens `thread` and has its chat scroll to message `id` and flash it.
-    pub fn open_message(&self, thread: ThreadId, id: i64) {
+    /// Opens the thread of `rendered` and has its chat scroll to message `id`
+    /// and flash it. `rendered` is the node and channel the clicked result
+    /// was drawn for; if the radio or the slot's channel has changed since,
+    /// nothing opens and the user is told.
+    pub(crate) fn open_message(&self, rendered: &ChatTarget, id: i64) {
+        let live = ChatTarget::of(
+            &self.store,
+            self.node.peek().clone(),
+            rendered.thread.clone(),
+        );
+        let connected = connected_node(&self.session.state());
+
+        if live != *rendered || connected.is_some_and(|n| Some(&n) != rendered.node.as_ref()) {
+            self.show_cancelled();
+
+            return;
+        }
+
         let mut reveal = self.reveal;
 
-        self.select(thread);
+        self.select(rendered.thread.clone());
         reveal.set(Some(id));
     }
 
@@ -888,6 +923,9 @@ pub fn App() -> Element {
                     }
                 }
                 main {
+                    // The composer and the contact and settings fields live
+                    // here; a focused button in this pane loses Ctrl+B too.
+                    onkeydown: |evt| keep_typing(&evt),
                     if !open {
                         div { class: "main-bar",
                             button {

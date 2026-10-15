@@ -5,7 +5,7 @@ use retkerno_core::model::{ThreadId, ThreadSummary};
 use retkerno_core::session::ConnState;
 
 use super::Icon;
-use crate::app::{SettingsTab, Ui, View};
+use crate::app::{SettingsTab, Ui, View, keep_typing};
 use crate::format;
 
 /// Where and for which thread the row menu is open.
@@ -148,6 +148,8 @@ fn SideHead() -> Element {
                     move |evt| ui.set_search(evt.value())
                 },
                 onkeydown: move |evt| {
+                    keep_typing(&evt);
+
                     if evt.key() == Key::Escape {
                         ui.set_search(String::new());
                     }

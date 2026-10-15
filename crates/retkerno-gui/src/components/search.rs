@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use retkerno_core::model::{Message, ThreadId, ThreadSummary};
 
-use crate::app::Ui;
+use crate::app::{ChatTarget, Ui};
 use crate::format;
 
 /// How many results the list shows at most.
@@ -29,17 +29,19 @@ pub fn SearchResults(query: String) -> Element {
     let _ = (ui.revision)();
 
     let query = query.trim().to_string();
-    let (hits, summaries) = match (ui.node)() {
+    let node = (ui.node)();
+    let (hits, summaries, channels) = match &node {
         Some(node) => (
             ui.store
-                .search(&node, &query, RESULT_LIMIT)
+                .search(node, &query, RESULT_LIMIT)
                 .unwrap_or_else(|e| {
                     tracing::warn!("search messages: {e}");
                     Vec::new()
                 }),
-            ui.store.threads(&node).unwrap_or_default(),
+            ui.store.threads(node).unwrap_or_default(),
+            ui.store.channels(node).unwrap_or_default(),
         ),
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new()),
     };
     let now = (ui.now)();
 
@@ -52,6 +54,7 @@ pub fn SearchResults(query: String) -> Element {
                 Hit {
                     key: "{message.id}",
                     title: thread_title(&summaries, &message.thread),
+                    target: ChatTarget::in_channels(&channels, node.clone(), message.thread.clone()),
                     query: query.clone(),
                     now,
                     message,
@@ -62,17 +65,18 @@ pub fn SearchResults(query: String) -> Element {
 }
 
 /// One result: thread title, sender, time, and the text with the match marked.
-/// Clicking it opens the thread at that message.
+/// Clicking it opens the thread at that message, unless the node or channel
+/// it was drawn for (`target`) has changed.
 #[component]
-fn Hit(message: Message, title: String, query: String, now: i64) -> Element {
+fn Hit(message: Message, title: String, target: ChatTarget, query: String, now: i64) -> Element {
     let ui = use_context::<Ui>();
     let time = format::relative_time(now, format::display_ts(&message));
-    let (thread, id) = (message.thread.clone(), message.id);
+    let id = message.id;
 
     rsx! {
         div {
             class: "result",
-            onclick: move |_| ui.open_message(thread.clone(), id),
+            onclick: move |_| ui.open_message(&target, id),
             div { class: "result-top",
                 div { class: "result-title", "{title}" }
                 if let Some(sender) = &message.sender {
