@@ -46,7 +46,7 @@ servers, repeater administration, and telemetry are not in it yet.
 |---|---|
 | `crates/retkerno-core` | All logic: config, SQLite store, radio wrapper (real and fake), session actor, demo fixtures. |
 | `crates/retkerno-gui` | The `retkerno` binary: a Dioxus desktop view over the core. |
-| `vendor/meshcore-rs` | `meshcore-rs` 0.2.0 with two patches. `PATCHES.md` lists them. |
+| `vendor/meshcore-rs` | [`meshcore-rs`](https://github.com/andrewdavidmackenzie/meshcore-rs) 0.2.0 (MIT) with three patches. `PATCHES.md` lists them. |
 
 ## Build and run
 
@@ -73,7 +73,7 @@ notarization. The `Info.plist` holds the Bluetooth usage text. macOS asks
 for Bluetooth permission the first time the app connects.
 
 macOS hides Bluetooth addresses from apps. Use the radio's advertised
-name, for example `MeshCore-LAGUARDO_LILYGO`, or click Scan in Settings >
+name, for example `MeshCore-MYNODE`, or click Scan in Settings >
 Connection.
 
 ## First run
@@ -110,7 +110,7 @@ to you.
 # config.toml
 [connection]
 transport = "ble"          # "ble", "serial", or "tcp"
-ble_device = "50:78:7D:2B:29:4D"
+ble_device = "AA:BB:CC:DD:EE:FF"   # or the advertised name, e.g. "MeshCore-MYNODE"
 serial_port = ""
 baud = 115200
 tcp_host = ""
@@ -141,7 +141,7 @@ the contact count, and the radio's own contact URI, then prints JSON. It
 changes nothing on the radio.
 
 ```sh
-cargo run -p retkerno-core --example probe -- --ble 50:78:7D:2B:29:4D
+cargo run -p retkerno-core --example probe -- --ble AA:BB:CC:DD:EE:FF
 ```
 
 ## Known limitations

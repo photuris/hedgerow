@@ -43,8 +43,8 @@ Read `README.md` first. This file holds what the code does not say.
   transport failure is `Error::Radio` (the outcome is unknown). After an
   unknown channel write the session reconnects, so the slot map is read
   again.
-- `meshcore-rs` is vendored with two patches (contact URI hex encoding,
-  reply subscription before enqueue). Keep `vendor/meshcore-rs/PATCHES.md`
+- `meshcore-rs` is vendored with three patches (contact URI hex encoding,
+  reply subscription before enqueue, BLE link-loss detection). Keep `vendor/meshcore-rs/PATCHES.md`
   current. The vendored crate is excluded from the workspace, so
   workspace clippy does not lint it.
 - `std::env::set_var` only in a synchronous `main`. Tests use the `_at`
