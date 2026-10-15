@@ -109,6 +109,7 @@ fn marked(text: &str, query: &str) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hedgerow_core::model::NotifyMode;
 
     fn summary(thread: ThreadId, title: &str) -> ThreadSummary {
         ThreadSummary {
@@ -117,6 +118,7 @@ mod tests {
             last_text: None,
             last_at: None,
             unread: 0,
+            notify: NotifyMode::Default,
         }
     }
 

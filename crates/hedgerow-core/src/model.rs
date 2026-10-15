@@ -238,6 +238,22 @@ pub struct ThreadSummary {
     pub last_at: Option<i64>,
     /// Incoming messages after the read marker.
     pub unread: u32,
+    /// When this conversation raises a desktop notification.
+    pub notify: NotifyMode,
+}
+
+/// When a conversation raises a desktop notification.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyMode {
+    /// Direct messages always; channel messages only when they mention the
+    /// radio's name.
+    #[default]
+    Default,
+    /// Every incoming message.
+    All,
+    /// Never.
+    Mute,
 }
 
 /// What the radio reports about itself.

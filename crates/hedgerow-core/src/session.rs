@@ -151,6 +151,14 @@ pub enum Update {
     State(ConnState),
     /// The store has new data; re-read it.
     StoreChanged,
+    /// Incoming rows a drain just stored, oldest first; `node` is the radio
+    /// they belong to.
+    Received {
+        /// The radio the rows belong to.
+        node: String,
+        /// Store ids of the new rows.
+        ids: Vec<i64>,
+    },
     /// A message for the user.
     Notice(String),
     /// Result of [`Command::ExportContact`].
@@ -832,11 +840,17 @@ impl Actor {
     /// An error stops the drain with a notice; rows inserted before it are
     /// still announced.
     async fn drain(&mut self) {
-        let mut inserted = false;
-        let drained = self.drain_queue(&mut inserted).await;
+        let mut stored = Vec::new();
+        let drained = self.drain_queue(&mut stored).await;
 
-        if inserted {
+        if !stored.is_empty() {
             self.changed();
+
+            // The drain holds `&self` throughout, so the connection that
+            // stored the rows is still the one held here.
+            if let Ok(node) = self.node() {
+                self.publish(Update::Received { node, ids: stored });
+            }
         }
 
         match drained {
@@ -852,8 +866,9 @@ impl Actor {
         }
     }
 
-    /// Stores queued messages until the queue is empty.
-    async fn drain_queue(&self, inserted: &mut bool) -> Result<()> {
+    /// Stores queued messages until the queue is empty, pushing the id of
+    /// every row it stored onto `stored`.
+    async fn drain_queue(&self, stored: &mut Vec<i64>) -> Result<()> {
         let node = self.node()?;
         let radio = &self.conn()?.radio;
 
@@ -870,7 +885,7 @@ impl Actor {
                 status: DeliveryStatus::Received,
             };
 
-            *inserted |= self.store.insert_message(&node, &row)?.is_some();
+            stored.extend(self.store.insert_message(&node, &row)?);
         }
 
         Ok(())

@@ -1166,3 +1166,78 @@ async fn should_wait_a_full_interval_after_a_long_drain_completes() {
 
     assert!(count(&f, "next_message") > 4, "no safety drain 30 s after");
 }
+
+#[tokio::test(start_paused = true)]
+async fn should_not_announce_outgoing_messages() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+
+    s.send(Command::Connect);
+    wait_for("connected", || connected(&s)).await;
+
+    let mut rx = s.subscribe();
+
+    s.send(Command::SendText {
+        thread: dm_thread(),
+        text: "outgoing".into(),
+    });
+    wait_for("row stored", || {
+        status_of(&store, &dm_thread(), "outgoing").is_some()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let received: Vec<_> = drain(&mut rx)
+        .into_iter()
+        .filter(|u| matches!(u, Update::Received { .. }))
+        .collect();
+
+    assert!(received.is_empty(), "{received:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn should_announce_rows_stored_before_a_drain_error() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+    let s = spawn(&f, &store, false);
+
+    s.send(Command::Connect);
+    wait_for("connected", || connected(&s)).await;
+
+    let mut rx = s.subscribe();
+
+    // The first `next_message` call sleeps inside the fake; arm the failure
+    // for the second call while it does.
+    f.state().next_message_delay_ms = 1_000;
+    f.push_incoming(IncomingMessage {
+        thread: ThreadId::Channel(0),
+        sender: Some("Bob".into()),
+        text: "stored before the error".into(),
+        sender_ts: 7,
+        path_len: None,
+        snr: None,
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.state().fail_call = Some(("next_message".into(), FakeFailure::Rejected("boom".into())));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let stored = store.messages(NODE, &ThreadId::Channel(0), 10).unwrap();
+    let updates = drain(&mut rx);
+
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert!(
+        updates
+            .iter()
+            .any(|u| matches!(u, Update::Notice(n) if n.contains("Reading messages failed"))),
+        "the drain did not fail: {updates:?}"
+    );
+    assert!(
+        updates.iter().any(|u| matches!(
+            u,
+            Update::Received { node, ids } if node == NODE && *ids == [stored[0].id]
+        )),
+        "no Received for row {}",
+        stored[0].id
+    );
+}

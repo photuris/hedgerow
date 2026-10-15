@@ -465,7 +465,7 @@ fn probe_store_persists_and_guards_schema() {
     match Store::open(&path) {
         Err(Error::SchemaTooNew {
             found: 99,
-            supported: 1,
+            supported: 2,
         }) => {}
         Err(other) => panic!("expected SchemaTooNew, got {other}"),
         Ok(_) => panic!("expected SchemaTooNew, got a store"),

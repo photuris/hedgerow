@@ -482,6 +482,7 @@ impl Ui {
             match updates.recv().await {
                 Ok(Update::State(state)) => self.apply_state(state),
                 Ok(Update::StoreChanged) => self.bump(),
+                Ok(Update::Received { .. }) => {}
                 Ok(Update::Notice(text)) => self.show_toast(text),
                 Ok(Update::Exported(uri)) => {
                     let mut exported = self.exported;

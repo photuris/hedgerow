@@ -21,17 +21,17 @@ use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use crate::error::{Error, Result};
 use crate::model::{
     Channel, Contact, ContactKind, DeliveryStatus, DeviceInfo, Direction, Message, NewMessage,
-    ThreadId, ThreadSummary,
+    NotifyMode, ThreadId, ThreadSummary,
 };
 use crate::text;
 
 /// Version of the table layout below; stored in `meta` as `schema_version`.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Prefix of the fallback thread key for a slot with no stored channel.
 const SLOT_KEY_PREFIX: &str = "idx:";
 
-/// Database schema for version 1; every statement is idempotent.
+/// Database schema for the current version; every statement is idempotent.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS devices(node_id TEXT PRIMARY KEY, info_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS contacts(node_id TEXT NOT NULL, public_key TEXT NOT NULL, name TEXT NOT NULL, kind INTEGER NOT NULL, path_len INTEGER NOT NULL, last_advert INTEGER NOT NULL, lat INTEGER NOT NULL, lon INTEGER NOT NULL, last_modified INTEGER NOT NULL, PRIMARY KEY(node_id, public_key));
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS channels(node_id TEXT NOT NULL, idx INTEGER NOT NULL,
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT NOT NULL, thread_kind TEXT NOT NULL, thread_key TEXT NOT NULL, direction TEXT NOT NULL, sender TEXT, text TEXT NOT NULL, sender_ts INTEGER NOT NULL, received_at INTEGER NOT NULL, path_len INTEGER, snr REAL, status TEXT NOT NULL, ack_tag BLOB);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_dedup ON messages(node_id, thread_kind, thread_key, direction, sender_ts, ifnull(sender, ''), text);
 CREATE INDEX IF NOT EXISTS messages_ack ON messages(node_id, ack_tag);
-CREATE TABLE IF NOT EXISTS thread_state(node_id TEXT NOT NULL, thread_kind TEXT NOT NULL, thread_key TEXT NOT NULL, last_read_id INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(node_id, thread_kind, thread_key));
+CREATE TABLE IF NOT EXISTS thread_state(node_id TEXT NOT NULL, thread_kind TEXT NOT NULL, thread_key TEXT NOT NULL, last_read_id INTEGER NOT NULL DEFAULT 0, notify TEXT NOT NULL DEFAULT 'default', PRIMARY KEY(node_id, thread_kind, thread_key));
 ";
 
 /// Handle to the database; clones share one connection.
@@ -634,6 +634,70 @@ impl Store {
         Ok(())
     }
 
+    /// Returns the notification mode of `thread`; [`NotifyMode::Default`]
+    /// when none was set. A channel's mode follows its secret, so it moves
+    /// with the channel to another slot and a different channel in the same
+    /// slot starts at the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] on SQLite failure.
+    pub fn notify_mode(&self, node: &str, thread: &ThreadId) -> Result<NotifyMode> {
+        let conn = self.lock();
+        let (kind, key) = thread_key(&conn, node, thread)?;
+
+        Ok(read_notify(&conn, node, kind, &key)?)
+    }
+
+    /// Sets the notification mode of `thread`, keeping its read marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] on SQLite failure.
+    pub fn set_notify(&self, node: &str, thread: &ThreadId, mode: NotifyMode) -> Result<()> {
+        let conn = self.lock();
+        let (kind, key) = thread_key(&conn, node, thread)?;
+
+        conn.execute(
+            "INSERT INTO thread_state(node_id, thread_kind, thread_key, last_read_id, notify) \
+             VALUES(?1, ?2, ?3, 0, ?4) \
+             ON CONFLICT(node_id, thread_kind, thread_key) \
+             DO UPDATE SET notify = excluded.notify",
+            params![node, kind, key, notify_str(mode)],
+        )?;
+
+        Ok(())
+    }
+
+    /// Returns the incoming messages of `thread` after its read marker,
+    /// oldest first. Empty when the thread's stored rows are not
+    /// addressable as `thread` (a channel slot whose channel changed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] on SQLite failure.
+    pub fn unread_incoming(&self, node: &str, thread: &ThreadId) -> Result<Vec<Message>> {
+        let conn = self.lock();
+        let (kind, key) = thread_key(&conn, node, thread)?;
+
+        if row_thread(&conn, node, kind, &key)?.as_ref() != Some(thread) {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MESSAGE_COLS} FROM messages \
+             WHERE node_id = ?1 AND thread_kind = ?2 AND thread_key = ?3 AND direction = 'in' \
+             AND id > coalesce((SELECT last_read_id FROM thread_state \
+             WHERE node_id = ?1 AND thread_kind = ?2 AND thread_key = ?3), 0) \
+             ORDER BY id"
+        ))?;
+        let rows = stmt.query_map(params![node, kind, key], |r| {
+            message_from_row(r, thread.clone())
+        })?;
+
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Counts unread incoming messages in contact threads and stored channels.
     ///
     /// # Errors
@@ -695,8 +759,18 @@ fn init_schema(conn: &mut Connection) -> Result<()> {
                 });
             }
 
-            if found != SCHEMA_VERSION {
-                return Err(Error::Invalid(format!("unknown schema_version {found}")));
+            match found {
+                1 => {
+                    tx.execute_batch(
+                        "ALTER TABLE thread_state ADD COLUMN notify TEXT NOT NULL DEFAULT 'default';",
+                    )?;
+                    tx.execute(
+                        "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                        params![SCHEMA_VERSION.to_string()],
+                    )?;
+                }
+                SCHEMA_VERSION => {}
+                _ => return Err(Error::Invalid(format!("unknown schema_version {found}"))),
             }
         }
     }
@@ -862,6 +936,39 @@ fn parse_direction(s: &str) -> Option<Direction> {
     }
 }
 
+/// Returns the database spelling of a notification mode.
+fn notify_str(mode: NotifyMode) -> &'static str {
+    match mode {
+        NotifyMode::Default => "default",
+        NotifyMode::All => "all",
+        NotifyMode::Mute => "mute",
+    }
+}
+
+/// Reads the stored mode of a conversation key; any unknown stored value
+/// reads as [`NotifyMode::Default`].
+fn read_notify(
+    conn: &Connection,
+    node: &str,
+    kind: &str,
+    key: &str,
+) -> rusqlite::Result<NotifyMode> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT notify FROM thread_state \
+             WHERE node_id = ?1 AND thread_kind = ?2 AND thread_key = ?3",
+            params![node, kind, key],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    Ok(match stored.as_deref() {
+        Some("all") => NotifyMode::All,
+        Some("mute") => NotifyMode::Mute,
+        _ => NotifyMode::Default,
+    })
+}
+
 /// Finds the name of the contact whose public key starts with `prefix`.
 fn contact_name(conn: &Connection, node: &str, prefix: &str) -> Result<Option<String>> {
     Ok(conn
@@ -910,6 +1017,7 @@ fn summarize(
         last_text,
         last_at,
         unread,
+        notify: read_notify(conn, node, kind, key)?,
     })
 }
 
@@ -1203,7 +1311,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn should_write_schema_version_one_on_a_fresh_file() {
+        fn should_write_schema_version_two_on_a_fresh_file() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("fresh.db");
 
@@ -1217,7 +1325,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "1");
+            assert_eq!(version, "2");
         }
 
         #[test]

@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod fixtures;
 pub mod model;
+pub mod notify;
 pub mod radio;
 pub mod session;
 pub mod store;
