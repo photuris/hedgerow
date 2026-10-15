@@ -1,0 +1,73 @@
+<!-- Hedgerow app icon: macOS master (Big Sur plate style) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2A6B45"/>
+      <stop offset="1" stop-color="#17492F"/>
+    </linearGradient>
+    <linearGradient id="back" gradientUnits="userSpaceOnUse" x1="0" y1="118" x2="0" y2="212">
+      <stop offset="0" stop-color="#47A56B"/>
+      <stop offset="1" stop-color="#2E7D4F"/>
+    </linearGradient>
+    <linearGradient id="front" gradientUnits="userSpaceOnUse" x1="0" y1="116" x2="0" y2="212">
+      <stop offset="0" stop-color="#6CC48A"/>
+      <stop offset="1" stop-color="#4FAE6E"/>
+    </linearGradient>
+    <linearGradient id="amber" gradientUnits="userSpaceOnUse" x1="0" y1="44" x2="0" y2="117">
+      <stop offset="0" stop-color="#F8CB72"/>
+      <stop offset="1" stop-color="#F2B544"/>
+    </linearGradient>
+    <filter id="plate-shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+      <feOffset dy="12" result="blur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.3"/>
+      <feComposite in2="blur" operator="in"/>
+    </filter>
+    <filter id="contact" x="-20%" y="-300%" width="140%" height="700%">
+      <feGaussianBlur stdDeviation="2.5"/>
+    </filter>
+  </defs>
+  <!-- plate: 824 x 824 at (100, 100), corner radius 185 -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#000000" filter="url(#plate-shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#plate)"/>
+  <!-- glyph scaled to about 70% of the plate -->
+  <g transform="translate(512 512) scale(3.3) translate(-128 -132)">
+    <!-- shadow under the hedge -->
+    <ellipse cx="128" cy="215" rx="86" ry="6" fill="#000000" fill-opacity="0.35" filter="url(#contact)"/>
+    <!-- back layer: darker lobes peeking into the notches -->
+    <g fill="url(#back)">
+      <path d="M38 150 H218 V200 a12 12 0 0 1 -12 12 H50 a12 12 0 0 1 -12 -12 Z"/>
+      <rect x="58" y="146" width="140" height="10"/>
+      <circle cx="73.5" cy="139" r="20"/>
+      <circle cx="109" cy="132" r="20"/>
+      <circle cx="147" cy="132" r="20"/>
+      <circle cx="182.5" cy="139" r="20"/>
+    </g>
+    <!-- front layer: five soft scallops -->
+    <g fill="url(#front)">
+      <path d="M38 150 H218 V200 a12 12 0 0 1 -12 12 H50 a12 12 0 0 1 -12 -12 Z"/>
+      <rect x="58" y="146" width="140" height="10"/>
+      <circle cx="58" cy="150" r="20"/>
+      <circle cx="93" cy="142" r="20"/>
+      <circle cx="128" cy="136" r="20"/>
+      <circle cx="163" cy="142" r="20"/>
+      <circle cx="198" cy="150" r="20"/>
+    </g>
+    <!-- leaf highlights -->
+    <g fill="none" stroke="#8FD3A4" stroke-width="5" stroke-linecap="round" stroke-opacity="0.8">
+      <path d="M46.72 145.90 A12 12 0 0 1 52.93 139.12"/>
+      <path d="M81.72 137.90 A12 12 0 0 1 87.93 131.12"/>
+      <path d="M116.72 131.90 A12 12 0 0 1 122.93 125.12"/>
+      <path d="M151.72 137.90 A12 12 0 0 1 157.93 131.12"/>
+      <path d="M186.72 145.90 A12 12 0 0 1 192.93 139.12"/>
+    </g>
+    <!-- signal -->
+    <g fill="url(#amber)" stroke="url(#amber)">
+      <circle cx="128" cy="107" r="10" stroke="none"/>
+      <g fill="none" stroke-width="10" stroke-linecap="round">
+        <path d="M103.49 86.43 A32 32 0 0 1 152.51 86.43"/>
+        <path d="M83.57 69.72 A58 58 0 0 1 172.43 69.72"/>
+      </g>
+    </g>
+  </g>
+</svg>

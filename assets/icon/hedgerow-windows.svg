@@ -1,0 +1,60 @@
+<!-- Hedgerow app icon: Windows master (Fluent style) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="back" gradientUnits="userSpaceOnUse" x1="0" y1="118" x2="0" y2="212">
+      <stop offset="0" stop-color="#3F9A63"/>
+      <stop offset="1" stop-color="#2E7D4F"/>
+    </linearGradient>
+    <linearGradient id="front" gradientUnits="userSpaceOnUse" x1="0" y1="116" x2="0" y2="212">
+      <stop offset="0" stop-color="#6CC48A"/>
+      <stop offset="1" stop-color="#4FAE6E"/>
+    </linearGradient>
+    <linearGradient id="amber" gradientUnits="userSpaceOnUse" x1="0" y1="44" x2="0" y2="117">
+      <stop offset="0" stop-color="#F6C463"/>
+      <stop offset="1" stop-color="#E5A22E"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-300%" width="140%" height="700%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+  </defs>
+  <!-- glyph scaled to about 85% of the canvas -->
+  <g transform="translate(128 128) scale(1.2) translate(-128 -132)">
+    <!-- shadow under the hedge -->
+    <ellipse cx="128" cy="217" rx="86" ry="6" fill="#000000" fill-opacity="0.28" filter="url(#soft)"/>
+    <!-- back layer: darker lobes peeking into the notches -->
+    <g fill="url(#back)">
+      <path d="M38 150 H218 V200 a12 12 0 0 1 -12 12 H50 a12 12 0 0 1 -12 -12 Z"/>
+      <rect x="58" y="146" width="140" height="10"/>
+      <circle cx="73.5" cy="139" r="20"/>
+      <circle cx="109" cy="132" r="20"/>
+      <circle cx="147" cy="132" r="20"/>
+      <circle cx="182.5" cy="139" r="20"/>
+    </g>
+    <!-- front layer: five soft scallops -->
+    <g fill="url(#front)">
+      <path d="M38 150 H218 V200 a12 12 0 0 1 -12 12 H50 a12 12 0 0 1 -12 -12 Z"/>
+      <rect x="58" y="146" width="140" height="10"/>
+      <circle cx="58" cy="150" r="20"/>
+      <circle cx="93" cy="142" r="20"/>
+      <circle cx="128" cy="136" r="20"/>
+      <circle cx="163" cy="142" r="20"/>
+      <circle cx="198" cy="150" r="20"/>
+    </g>
+    <!-- leaf highlights -->
+    <g fill="none" stroke="#8FD3A4" stroke-width="5" stroke-linecap="round" stroke-opacity="0.8">
+      <path d="M46.72 145.90 A12 12 0 0 1 52.93 139.12"/>
+      <path d="M81.72 137.90 A12 12 0 0 1 87.93 131.12"/>
+      <path d="M116.72 131.90 A12 12 0 0 1 122.93 125.12"/>
+      <path d="M151.72 137.90 A12 12 0 0 1 157.93 131.12"/>
+      <path d="M186.72 145.90 A12 12 0 0 1 192.93 139.12"/>
+    </g>
+    <!-- signal -->
+    <g fill="url(#amber)" stroke="url(#amber)">
+      <circle cx="128" cy="107" r="10" stroke="none"/>
+      <g fill="none" stroke-width="10" stroke-linecap="round">
+        <path d="M103.49 86.43 A32 32 0 0 1 152.51 86.43"/>
+        <path d="M83.57 69.72 A58 58 0 0 1 172.43 69.72"/>
+      </g>
+    </g>
+  </g>
+</svg>
