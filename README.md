@@ -55,6 +55,9 @@ servers, repeater administration, and telemetry are not in it yet.
 |---|---|
 | `crates/hedgerow-core` | All logic: config, SQLite store, radio wrapper (real and fake), session actor, demo fixtures. |
 | `crates/hedgerow-gui` | The `hedgerow` binary: a Dioxus desktop view over the core. |
+| `assets/icon` | The SVG icon masters. |
+| `packaging/` | Generated icons (Linux, macOS, Windows), the Linux launcher entry, and the Arch `PKGBUILD`. |
+| `scripts/render-icons.sh` | Renders the icons in `packaging/` from `assets/icon`. |
 | `vendor/meshcore-rs` | [`meshcore-rs`](https://github.com/andrewdavidmackenzie/meshcore-rs) 0.2.0 (MIT) with three patches. `PATCHES.md` lists them. |
 
 ## Build and run
@@ -84,6 +87,26 @@ for Bluetooth permission the first time the app connects.
 macOS hides Bluetooth addresses from apps. Use the radio's advertised
 name, for example `MeshCore-MYNODE`, or click Scan in Settings >
 Connection.
+
+## Install
+
+**Arch / Omarchy.** Build and install the package:
+
+```sh
+cd packaging/arch && makepkg -si
+```
+
+This builds the latest commit on GitHub, not your local changes. It
+installs the binary, the launcher entry, and the icons. Remove it with
+`sudo pacman -R hedgerow-git`.
+
+**macOS.** Run `./scripts/bundle-macos.sh` (see above). The bundle carries
+`Hedgerow.icns`, so Finder and the Dock show the Hedgerow icon.
+
+**Windows.** There is no installer yet. The window shows the icon at
+runtime, but the taskbar may not. Notifications still appear under
+PowerShell's name. `packaging/windows/hedgerow.ico` is ready for an
+installer.
 
 ## First run
 
@@ -182,5 +205,5 @@ cargo run -p hedgerow-core --example probe -- --ble AA:BB:CC:DD:EE:FF
 ## Not in this first pass
 
 GPS and maps, room-server login, repeater administration, telemetry, path
-discovery and trace, private-key export or import, Linux packaging, a
-Windows installer, and a notarized macOS build.
+discovery and trace, private-key export or import, packages for
+distributions other than Arch, a Windows installer, and a notarized macOS build.

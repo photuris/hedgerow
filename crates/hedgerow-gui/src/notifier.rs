@@ -148,7 +148,10 @@ fn deliver(post: &Post, clicks: &UnboundedSender<(String, i64)>) {
             notification.id(os_id);
         }
 
-        notification.action("default", "Open");
+        notification
+            .icon("hedgerow")
+            .hint(notify_rust::Hint::DesktopEntry("hedgerow".into()))
+            .action("default", "Open");
 
         match notification.show() {
             Err(e) => tracing::warn!("show notification: {e}"),

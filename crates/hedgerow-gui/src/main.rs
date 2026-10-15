@@ -83,14 +83,26 @@ fn main() {
         .with_min_inner_size(LogicalSize::new(800.0, 500.0))
         .with_decorations(want_decorations(&boot.config.ui.decorations));
 
+    // `with_window` replaces the whole window builder, so the icon goes on after it.
+    let mut cfg = WindowConfig::new()
+        .with_window(window)
+        .with_menu(None::<dioxus::desktop::muda::Menu>);
+
+    if let Some(icon) = window_icon() {
+        cfg = cfg.with_icon(icon);
+    }
+
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(
-            WindowConfig::new()
-                .with_window(window)
-                .with_menu(None::<dioxus::desktop::muda::Menu>),
-        )
+        .with_cfg(cfg)
         .with_context(boot)
         .launch(App);
+}
+
+/// The window icon: the 256 px Hedgerow icon, decoded at start.
+fn window_icon() -> Option<dioxus::desktop::tao::window::Icon> {
+    dioxus::desktop::icon_from_memory(include_bytes!("../assets/icon-256.png"))
+        .inspect_err(|e| tracing::warn!("window icon: {e}"))
+        .ok()
 }
 
 /// Whether the window should carry a title bar. Config "on"/"off" wins; "auto" keeps native
@@ -157,6 +169,11 @@ mod tests {
         assert!(!is_tiling_session("COSMIC", false));
         assert!(!is_tiling_session("", false));
         assert!(is_tiling_session("ubuntu:GNOME:i3", false));
+    }
+
+    #[test]
+    fn window_icon_decodes() {
+        assert!(window_icon().is_some());
     }
 
     #[test]

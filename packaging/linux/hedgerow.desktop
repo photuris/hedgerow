@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hedgerow
+GenericName=MeshCore Chat
+Comment=Chat over MeshCore LoRa radios
+Exec=hedgerow
+Icon=hedgerow
+Terminal=false
+Categories=Network;Chat;
+Keywords=meshcore;lora;mesh;radio;chat;
+StartupWMClass=hedgerow

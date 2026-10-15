@@ -1,0 +1,53 @@
+# Maintainer: Joshua Pruitt
+pkgname=hedgerow-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc="Desktop chat client for MeshCore companion radios"
+arch=(x86_64 aarch64)
+url=https://github.com/photuris/hedgerow
+license=(MIT)
+depends=(webkit2gtk-4.1 gtk3 xdotool dbus openssl)
+optdepends=('bluez: Bluetooth radios')
+makedepends=(cargo git)
+provides=(hedgerow)
+conflicts=(hedgerow)
+options=(!debug !lto) # bundled sqlite is C built with -flto, which lld cannot link
+source=("hedgerow::git+https://github.com/photuris/hedgerow.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$srcdir/hedgerow"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+    cd hedgerow
+    cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+    cd hedgerow
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p hedgerow-gui
+}
+
+check() {
+    cd hedgerow
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen -p hedgerow-core
+}
+
+package() {
+    cd hedgerow
+
+    install -Dm755 target/release/hedgerow "$pkgdir/usr/bin/hedgerow"
+    install -Dm644 packaging/linux/hedgerow.desktop "$pkgdir/usr/share/applications/hedgerow.desktop"
+
+    local icons=packaging/linux/icons/hicolor f
+    while IFS= read -r -d '' f; do
+        install -Dm644 "$f" "$pkgdir/usr/share/icons/hicolor/${f#"$icons"/}"
+    done < <(find "$icons" -type f -print0)
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
