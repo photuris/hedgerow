@@ -1,15 +1,15 @@
 <!-- Hedgerow app icon: Windows master (Fluent style) -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <linearGradient id="back" gradientUnits="userSpaceOnUse" x1="0" y1="94.1" x2="0" y2="209.1">
+    <linearGradient id="back" gradientUnits="userSpaceOnUse" x1="0" y1="122.9" x2="0" y2="237.9">
       <stop offset="0" stop-color="#3F9A63"/>
       <stop offset="1" stop-color="#2E7D4F"/>
     </linearGradient>
-    <linearGradient id="front" gradientUnits="userSpaceOnUse" x1="0" y1="102.1" x2="0" y2="209.1">
+    <linearGradient id="front" gradientUnits="userSpaceOnUse" x1="0" y1="130.9" x2="0" y2="237.9">
       <stop offset="0" stop-color="#6CC48A"/>
       <stop offset="1" stop-color="#4FAE6E"/>
     </linearGradient>
-    <linearGradient id="amber" gradientUnits="userSpaceOnUse" x1="0" y1="46.9" x2="0" y2="118.81">
+    <linearGradient id="amber" gradientUnits="userSpaceOnUse" x1="0" y1="18.1" x2="0" y2="108.4">
       <stop offset="0" stop-color="#F6C463"/>
       <stop offset="1" stop-color="#E5A22E"/>
     </linearGradient>
@@ -18,35 +18,37 @@
     </filter>
   </defs>
   <!-- shadow under the hedge -->
-  <ellipse cx="128" cy="212.1" rx="92" ry="6" fill="#000000" fill-opacity="0.28" filter="url(#soft)"/>
+  <ellipse cx="128" cy="240.9" rx="92" ry="6" fill="#000000" fill-opacity="0.28" filter="url(#soft)"/>
+  <!-- mast -->
+  <rect x="123.5" y="65.5" width="9" height="71.4" fill="url(#back)"/>
   <!-- signal -->
   <g fill="url(#amber)" stroke="url(#amber)">
-    <circle cx="128" cy="85.1" r="10" stroke="none"/>
+    <circle cx="128" cy="65.5" r="17.5" stroke="none"/>
     <g fill="none" stroke-width="9" stroke-linecap="round">
-      <path d="M111.29 65.19 A26 26 0 0 0 111.29 105.02"/>
-      <path d="M144.71 65.19 A26 26 0 0 1 144.71 105.02"/>
-      <path d="M99.72 51.4 A44 44 0 0 0 99.72 118.81"/>
-      <path d="M156.28 51.4 A44 44 0 0 1 156.28 118.81"/>
+      <path d="M105.5 38.69 A35.0 35.0 0 0 0 105.5 92.31"/>
+      <path d="M150.5 38.69 A35.0 35.0 0 0 1 150.5 92.31"/>
+      <path d="M92 22.6 A56 56 0 0 0 92 108.4"/>
+      <path d="M164 22.6 A56 56 0 0 1 164 108.4"/>
     </g>
   </g>
   <!-- back layer: darker crest -->
   <g fill="url(#back)">
-    <path d="M24 140.7 H232 V187.1 a22 22 0 0 1 -22 22 H46 a22 22 0 0 1 -22 -22 Z"/>
-    <circle cx="49" cy="142.1" r="32"/>
-    <circle cx="128" cy="141.11" r="47.01"/>
-    <circle cx="207" cy="142.1" r="32"/>
+    <path d="M24 169.5 H232 V215.9 a22 22 0 0 1 -22 22 H46 a22 22 0 0 1 -22 -22 Z"/>
+    <circle cx="49" cy="170.9" r="32"/>
+    <circle cx="128" cy="169.9" r="47.01"/>
+    <circle cx="207" cy="170.9" r="32"/>
   </g>
   <!-- front layer: three lobes -->
   <g fill="url(#front)">
-    <path d="M24 148.7 H232 V187.1 a22 22 0 0 1 -22 22 H46 a22 22 0 0 1 -22 -22 Z"/>
-    <circle cx="49" cy="150.1" r="32"/>
-    <circle cx="128" cy="149.11" r="47.01"/>
-    <circle cx="207" cy="150.1" r="32"/>
+    <path d="M24 177.5 H232 V215.9 a22 22 0 0 1 -22 22 H46 a22 22 0 0 1 -22 -22 Z"/>
+    <circle cx="49" cy="178.9" r="32"/>
+    <circle cx="128" cy="177.9" r="47.01"/>
+    <circle cx="207" cy="178.9" r="32"/>
   </g>
   <!-- leaf highlights -->
   <g fill="none" stroke="#8FD3A4" stroke-width="5" stroke-linecap="round" stroke-opacity="0.8">
-    <path d="M28.08 143.3 A22 22 0 0 1 38.67 130.68"/>
-    <path d="M92.8 137.67 A37.01 37.01 0 0 1 110.63 116.43"/>
-    <path d="M186.08 143.3 A22 22 0 0 1 196.67 130.68"/>
+    <path d="M28.08 172.1 A22 22 0 0 1 38.67 159.47"/>
+    <path d="M92.8 166.47 A37.01 37.01 0 0 1 110.63 145.23"/>
+    <path d="M186.08 172.1 A22 22 0 0 1 196.67 159.47"/>
   </g>
 </svg>
