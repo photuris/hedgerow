@@ -1,47 +1,42 @@
 <!-- Hedgerow app icon: Linux master (freedesktop, flat) -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- ground line -->
-  <rect x="30" y="212" width="196" height="8" rx="4" fill="#2E7D4F"/>
-  <!-- back layer: darker lobes peeking into the notches -->
-  <g fill="#2E7D4F">
-    <path d="M38 150 H218 V200 a12 12 0 0 1 -12 12 H50 a12 12 0 0 1 -12 -12 Z"/>
-    <rect x="58" y="146" width="140" height="10"/>
-    <circle cx="73.5" cy="139" r="20"/>
-    <circle cx="109" cy="132" r="20"/>
-    <circle cx="147" cy="132" r="20"/>
-    <circle cx="182.5" cy="139" r="20"/>
-  </g>
-  <!-- front layer: five soft scallops -->
-  <g fill="#4FAE6E">
-    <path d="M38 150 H218 V200 a12 12 0 0 1 -12 12 H50 a12 12 0 0 1 -12 -12 Z"/>
-    <rect x="58" y="146" width="140" height="10"/>
-    <circle cx="58" cy="150" r="20"/>
-    <circle cx="93" cy="142" r="20"/>
-    <circle cx="128" cy="136" r="20"/>
-    <circle cx="163" cy="142" r="20"/>
-    <circle cx="198" cy="150" r="20"/>
-  </g>
-  <!-- leaf highlights -->
-  <g fill="none" stroke="#8FD3A4" stroke-width="5" stroke-linecap="round">
-    <path d="M46.72 145.90 A12 12 0 0 1 52.93 139.12"/>
-    <path d="M81.72 137.90 A12 12 0 0 1 87.93 131.12"/>
-    <path d="M116.72 131.90 A12 12 0 0 1 122.93 125.12"/>
-    <path d="M151.72 137.90 A12 12 0 0 1 157.93 131.12"/>
-    <path d="M186.72 145.90 A12 12 0 0 1 192.93 139.12"/>
-  </g>
-  <!-- signal: darker amber lip, then amber node and arcs -->
+  <!-- signal -->
   <g transform="translate(0 4)" fill="#B9801C" stroke="#B9801C">
-    <circle cx="128" cy="107" r="10" stroke="none"/>
-    <g fill="none" stroke-width="10" stroke-linecap="round">
-      <path d="M103.49 86.43 A32 32 0 0 1 152.51 86.43"/>
-      <path d="M83.57 69.72 A58 58 0 0 1 172.43 69.72"/>
+    <circle cx="128" cy="85.1" r="10" stroke="none"/>
+    <g fill="none" stroke-width="9" stroke-linecap="round">
+      <path d="M111.29 65.19 A26 26 0 0 0 111.29 105.02"/>
+      <path d="M144.71 65.19 A26 26 0 0 1 144.71 105.02"/>
+      <path d="M99.72 51.4 A44 44 0 0 0 99.72 118.81"/>
+      <path d="M156.28 51.4 A44 44 0 0 1 156.28 118.81"/>
     </g>
   </g>
   <g fill="#F2B544" stroke="#F2B544">
-    <circle cx="128" cy="107" r="10" stroke="none"/>
-    <g fill="none" stroke-width="10" stroke-linecap="round">
-      <path d="M103.49 86.43 A32 32 0 0 1 152.51 86.43"/>
-      <path d="M83.57 69.72 A58 58 0 0 1 172.43 69.72"/>
+    <circle cx="128" cy="85.1" r="10" stroke="none"/>
+    <g fill="none" stroke-width="9" stroke-linecap="round">
+      <path d="M111.29 65.19 A26 26 0 0 0 111.29 105.02"/>
+      <path d="M144.71 65.19 A26 26 0 0 1 144.71 105.02"/>
+      <path d="M99.72 51.4 A44 44 0 0 0 99.72 118.81"/>
+      <path d="M156.28 51.4 A44 44 0 0 1 156.28 118.81"/>
     </g>
+  </g>
+  <!-- back layer: darker crest -->
+  <g fill="#2E7D4F">
+    <path d="M24 140.7 H232 V187.1 a22 22 0 0 1 -22 22 H46 a22 22 0 0 1 -22 -22 Z"/>
+    <circle cx="49" cy="142.1" r="32"/>
+    <circle cx="128" cy="141.11" r="47.01"/>
+    <circle cx="207" cy="142.1" r="32"/>
+  </g>
+  <!-- front layer: three lobes -->
+  <g fill="#4FAE6E">
+    <path d="M24 148.7 H232 V187.1 a22 22 0 0 1 -22 22 H46 a22 22 0 0 1 -22 -22 Z"/>
+    <circle cx="49" cy="150.1" r="32"/>
+    <circle cx="128" cy="149.11" r="47.01"/>
+    <circle cx="207" cy="150.1" r="32"/>
+  </g>
+  <!-- leaf highlights -->
+  <g fill="none" stroke="#8FD3A4" stroke-width="5" stroke-linecap="round">
+    <path d="M28.08 143.3 A22 22 0 0 1 38.67 130.68"/>
+    <path d="M92.8 137.67 A37.01 37.01 0 0 1 110.63 116.43"/>
+    <path d="M186.08 143.3 A22 22 0 0 1 196.67 130.68"/>
   </g>
 </svg>
