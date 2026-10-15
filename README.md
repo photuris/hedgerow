@@ -20,6 +20,16 @@ servers, repeater administration, and telemetry are not in it yet.
   read or unread, or use "Mark all read".
 - Keeps every message in a local SQLite database, so history survives
   restarts and works offline.
+- Searches messages. Type two or more characters in the box at the top of
+  the sidebar (or press Ctrl+F, Cmd+F on macOS) to list matching messages,
+  newest first, up to 200. The match covers message text and sender names,
+  and ignores ASCII case. Click a result to open its thread at that
+  message. Escape clears the box and brings back the view you were in.
+- The sidebar resizes and collapses. Drag the divider between the sidebar
+  and the main area to set its width (180 to 480 px, saved in
+  `config.toml` as `ui.sidebar_width`). Press Ctrl+B (Cmd+B on macOS) or
+  use the panel button to hide or show it. The collapsed state is not
+  saved.
 - Contacts: search, filter by kind, message, share as a `meshcore://`
   URI, import a URI, reset a path, remove, and send adverts.
 - Channels: add hashtag channels (the key comes from the name), add

@@ -15,6 +15,8 @@ use std::time::Duration;
 use dioxus::core::{
     AttributeValue, DynamicNode, ElementId, TemplateAttribute, TemplateNode, VNode,
 };
+use dioxus::html::geometry::{ClientPoint, Coordinates, ElementPoint, PagePoint, ScreenPoint};
+use dioxus::html::input_data::{MouseButton, MouseButtonSet};
 use dioxus::html::{
     Code, Location, Modifiers, PlatformEventData, SerializedFormData, SerializedHtmlEventConverter,
     SerializedKeyboardData, SerializedMouseData,
@@ -26,7 +28,7 @@ use retkerno_core::radio::{FakeRadio, FakeSent};
 use retkerno_core::session::{Command, ConnState};
 use retkerno_core::store::Store;
 
-use crate::app::{App, Boot, Hooks, Ui, now_secs};
+use crate::app::{App, Boot, Hooks, Ui, View, now_secs};
 
 /// The warning the device confirmation appends when radio parameters change.
 const RADIO_WARNING: &str = "Radios only hear each other with identical frequency, bandwidth, spreading factor, and coding rate.";
@@ -283,17 +285,37 @@ fn change(dom: &VirtualDom, name: &str, value: &str) {
 
 /// Presses `key` on `el`.
 fn key_down(dom: &VirtualDom, el: &El, key: Key, code: Code) {
+    key_down_with(dom, el, key, code, Modifiers::empty());
+}
+
+/// Presses `key` on `el` while `modifiers` are held.
+fn key_down_with(dom: &VirtualDom, el: &El, key: Key, code: Code, modifiers: Modifiers) {
     event(
         dom,
         el,
         "keydown",
-        SerializedKeyboardData::new(
-            key,
-            code,
-            Location::Standard,
-            false,
+        SerializedKeyboardData::new(key, code, Location::Standard, false, modifiers, false),
+    );
+}
+
+/// Delivers the mouse event `name` to `el` with the pointer at column `x`.
+fn mouse(dom: &VirtualDom, el: &El, name: &str, x: f64) {
+    let at = Coordinates::new(
+        ScreenPoint::new(x, 0.0),
+        ClientPoint::new(x, 0.0),
+        ElementPoint::new(0.0, 0.0),
+        PagePoint::new(x, 0.0),
+    );
+
+    event(
+        dom,
+        el,
+        name,
+        SerializedMouseData::new(
+            Some(MouseButton::Primary),
+            MouseButtonSet::empty(),
+            at,
             Modifiers::empty(),
-            false,
         ),
     );
 }
@@ -1476,4 +1498,405 @@ async fn r2_import_refuses_actor_node_change_before_ui_update() {
         ui.toast.peek().as_deref(),
         Some("The radio changed; action cancelled")
     );
+}
+
+// ── 011: sidebar and search ─────────────────────────────────────────────────
+
+/// The element carrying the root key handler.
+fn app_root(dom: &VirtualDom) -> El {
+    els(dom)
+        .into_iter()
+        .find(|e| e.has_class("app"))
+        .expect("the .app element is missing")
+}
+
+/// The grid that holds the sidebar, the divider, and `<main>`.
+fn panes(dom: &VirtualDom) -> El {
+    els(dom)
+        .into_iter()
+        .find(|e| e.attr("class").is_some_and(|c| c.starts_with("panes")))
+        .expect("the .panes element is missing")
+}
+
+/// The sidebar divider.
+fn divider(dom: &VirtualDom) -> El {
+    els(dom)
+        .into_iter()
+        .find(|e| e.has_class("resizer"))
+        .expect("the divider is missing")
+}
+
+/// The button whose `title` is `title`.
+fn titled_button(dom: &VirtualDom, title: &str) -> El {
+    els(dom)
+        .into_iter()
+        .find(|e| e.tag == "button" && e.attr("title") == Some(title))
+        .unwrap_or_else(|| panic!("button titled {title:?} missing"))
+}
+
+/// Whether the sidebar and its divider are on the page.
+fn sidebar_shown(dom: &VirtualDom) -> bool {
+    let page = els(dom);
+
+    page.iter().any(|e| e.tag == "aside") && page.iter().any(|e| e.has_class("resizer"))
+}
+
+/// Whether neither the sidebar nor its divider is on the page.
+fn sidebar_gone(dom: &VirtualDom) -> bool {
+    let page = els(dom);
+
+    !page.iter().any(|e| e.tag == "aside") && !page.iter().any(|e| e.has_class("resizer"))
+}
+
+/// Presses Ctrl plus the letter `letter` on the root element.
+fn ctrl(dom: &VirtualDom, letter: &str) {
+    key_down_with(
+        dom,
+        &app_root(dom),
+        Key::Character(letter.into()),
+        Code::KeyB,
+        Modifiers::CONTROL,
+    );
+}
+
+/// Drags the divider from column 260 to `to` and lets the page settle.
+async fn drag_divider(dom: &mut VirtualDom, to: f64) {
+    mouse(dom, &divider(dom), "mousedown", 260.0);
+    mouse(dom, &panes(dom), "mousemove", to);
+    settle(dom).await;
+}
+
+/// Types `text` into the sidebar's search box.
+async fn search_for(dom: &mut VirtualDom, text: &str) {
+    type_in(dom, "sidebar-search", text);
+    settle(dom).await;
+}
+
+/// The search results on the page.
+fn results(dom: &VirtualDom) -> Vec<El> {
+    els(dom)
+        .into_iter()
+        .filter(|e| e.has_class("result"))
+        .collect()
+}
+
+/// The text of every `<mark>` on the page.
+fn marks(dom: &VirtualDom) -> Vec<String> {
+    els(dom)
+        .into_iter()
+        .filter(|e| e.tag == "mark")
+        .map(|e| e.text)
+        .collect()
+}
+
+/// The newest stored message of the demo node that contains `needle`.
+fn found(ui: &Ui, needle: &str) -> retkerno_core::model::Message {
+    let node = ui.node.peek().clone().unwrap();
+
+    ui.store
+        .search(&node, needle, 1)
+        .unwrap()
+        .pop()
+        .unwrap_or_else(|| panic!("no stored message contains {needle:?}"))
+}
+
+#[tokio::test]
+async fn sidebar_divider_drag_sets_the_width_and_clamps_at_both_ends() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    assert_eq!(*ui.sidebar_width.peek(), 260);
+
+    drag_divider(&mut dom, 300.0).await;
+    assert_eq!(*ui.sidebar_width.peek(), 300);
+    assert!(
+        panes(&dom)
+            .attr("style")
+            .is_some_and(|s| s.contains("300px 6px")),
+        "the grid follows the width: {:?}",
+        panes(&dom).attr("style")
+    );
+
+    mouse(&dom, &panes(&dom), "mousemove", 9000.0);
+    settle(&mut dom).await;
+    assert_eq!(*ui.sidebar_width.peek(), 480);
+
+    mouse(&dom, &panes(&dom), "mousemove", -9000.0);
+    settle(&mut dom).await;
+    assert_eq!(*ui.sidebar_width.peek(), 180);
+}
+
+#[tokio::test]
+async fn sidebar_divider_moves_without_a_drag_change_nothing() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    mouse(&dom, &panes(&dom), "mousemove", 400.0);
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.sidebar_width.peek(), 260);
+}
+
+#[tokio::test]
+async fn sidebar_divider_drag_stops_on_mouse_up_and_keeps_the_config_in_step() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    drag_divider(&mut dom, 320.0).await;
+    mouse(&dom, &panes(&dom), "mouseup", 320.0);
+    settle(&mut dom).await;
+    mouse(&dom, &panes(&dom), "mousemove", 400.0);
+    settle(&mut dom).await;
+
+    assert_eq!(
+        *ui.sidebar_width.peek(),
+        320,
+        "no drag after the button is up"
+    );
+    assert_eq!(ui.config.peek().ui.sidebar_width, 320);
+    assert_eq!(panes(&dom).attr("class"), Some("panes"));
+}
+
+#[tokio::test]
+async fn sidebar_toggle_button_collapses_and_reopens_keeping_the_width() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    drag_divider(&mut dom, 330.0).await;
+    mouse(&dom, &panes(&dom), "mouseup", 330.0);
+    assert!(sidebar_shown(&dom));
+
+    click(&dom, &titled_button(&dom, "Hide sidebar"));
+    settle(&mut dom).await;
+
+    assert!(
+        sidebar_gone(&dom),
+        "collapsed means no sidebar and no divider"
+    );
+    assert!(
+        panes(&dom).attr("style").is_some_and(|s| !s.contains("px")),
+        "only the main column is left: {:?}",
+        panes(&dom).attr("style")
+    );
+
+    click(&dom, &titled_button(&dom, "Show sidebar"));
+    settle(&mut dom).await;
+
+    assert!(sidebar_shown(&dom));
+    assert_eq!(*ui.sidebar_width.peek(), 330);
+}
+
+#[tokio::test]
+async fn sidebar_ctrl_b_toggles_and_other_chords_do_not() {
+    let (mut dom, _ui, _fake) = setup("contacts").await;
+
+    ctrl(&dom, "b");
+    settle(&mut dom).await;
+    assert!(sidebar_gone(&dom));
+
+    ctrl(&dom, "b");
+    settle(&mut dom).await;
+    assert!(sidebar_shown(&dom));
+
+    key_down(
+        &dom,
+        &app_root(&dom),
+        Key::Character("b".into()),
+        Code::KeyB,
+    );
+    ctrl(&dom, "x");
+    settle(&mut dom).await;
+    assert!(sidebar_shown(&dom), "a bare b and Ctrl+X leave it alone");
+}
+
+#[tokio::test]
+async fn search_ctrl_f_opens_a_collapsed_sidebar_and_asks_the_box_for_focus() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    in_app(&dom, || ui.toggle_sidebar());
+    settle(&mut dom).await;
+    assert!(sidebar_gone(&dom));
+
+    ctrl(&dom, "f");
+    assert!(*ui.focus_search.peek(), "Ctrl+F asks for focus");
+
+    settle(&mut dom).await;
+
+    assert!(sidebar_shown(&dom));
+    assert!(
+        !*ui.focus_search.peek(),
+        "the search box took the focus request"
+    );
+}
+
+#[tokio::test]
+async fn search_two_characters_show_matching_results_and_update_as_you_type() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    search_for(&mut dom, "a").await;
+    assert!(results(&dom).is_empty(), "one character shows no results");
+    assert_eq!(*ui.view.peek(), View::Contacts);
+
+    search_for(&mut dom, "ANTENNA").await;
+
+    let shown = results(&dom);
+
+    assert_eq!(shown.len(), 1, "{}", page_text(&dom));
+    assert!(
+        shown[0]
+            .text
+            .contains("Can you bring the antenna on Saturday?")
+    );
+    assert!(
+        shown[0].text.contains("Bob"),
+        "the thread title: {}",
+        shown[0].text
+    );
+    assert_eq!(marks(&dom), ["antenna"], "the text's own case is kept");
+
+    search_for(&mut dom, "net").await;
+
+    let shown = results(&dom);
+
+    assert_eq!(shown.len(), 1, "{}", page_text(&dom));
+    assert!(shown[0].text.contains("Net starts at 8pm"));
+    assert!(
+        shown[0].text.contains("Alice"),
+        "the sender: {}",
+        shown[0].text
+    );
+    assert_eq!(marks(&dom), ["Net"]);
+    assert!(!first_tag(&dom, "main").text.contains("antenna"));
+    assert!(matches!(*ui.view.peek(), View::Search(_)));
+}
+
+#[tokio::test]
+async fn search_sender_matches_are_marked_too() {
+    let (mut dom, _ui, _fake) = setup("contacts").await;
+
+    search_for(&mut dom, "carol").await;
+
+    assert_eq!(results(&dom).len(), 1);
+    assert_eq!(marks(&dom), ["Carol"]);
+}
+
+#[tokio::test]
+async fn search_lists_at_most_200_results() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = ui.node.peek().clone().unwrap();
+
+    in_app(&dom, || {
+        for n in 0..250 {
+            ui.store
+                .insert_message(&node, &incoming(&format!("bulk line {n}")))
+                .unwrap();
+        }
+
+        ui.bump();
+    });
+    search_for(&mut dom, "bulk line").await;
+
+    assert_eq!(results(&dom).len(), 200);
+}
+
+#[tokio::test]
+async fn search_miss_says_no_messages_match() {
+    let (mut dom, _ui, _fake) = setup("contacts").await;
+
+    search_for(&mut dom, "zzzz").await;
+
+    assert!(results(&dom).is_empty());
+    assert!(first_tag(&dom, "main").text.contains("No messages match"));
+}
+
+#[tokio::test]
+async fn search_click_on_a_result_opens_its_thread_at_the_message() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let hit = found(&ui, "antenna");
+
+    search_for(&mut dom, "antenna").await;
+    click(&dom, &results(&dom)[0]);
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Thread(hit.thread.clone()));
+
+    let bubble = by_id(&dom, &format!("msg-{}", hit.id));
+
+    assert_eq!(
+        bubble.attr("class"),
+        Some("msg in flash"),
+        "the found message is highlighted"
+    );
+    assert_eq!(*ui.reveal.peek(), None, "the request is used up");
+    assert_eq!(
+        ui.search.peek().as_str(),
+        "antenna",
+        "the box keeps its text"
+    );
+}
+
+#[tokio::test]
+async fn search_click_loads_a_message_older_than_the_newest_500() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = ui.node.peek().clone().unwrap();
+    let oldest = in_app(&dom, || {
+        let oldest = ui
+            .store
+            .insert_message(&node, &incoming("zebra crossing ahead"))
+            .unwrap()
+            .unwrap();
+
+        for n in 0..600 {
+            ui.store
+                .insert_message(&node, &incoming(&format!("filler {n}")))
+                .unwrap();
+        }
+
+        ui.bump();
+
+        oldest
+    });
+    let bubble = format!("msg-{oldest}");
+
+    in_app(&dom, || ui.select(ThreadId::Channel(0)));
+    settle(&mut dom).await;
+    assert!(
+        !els(&dom).iter().any(|e| e.attr("id") == Some(&bubble)),
+        "a plain open shows only the newest 500"
+    );
+
+    search_for(&mut dom, "zebra").await;
+    click(&dom, &results(&dom)[0]);
+    settle(&mut dom).await;
+
+    assert_eq!(by_id(&dom, &bubble).attr("class"), Some("msg in flash"));
+}
+
+#[tokio::test]
+async fn search_escape_clears_the_box_and_returns_to_the_previous_view() {
+    let (mut dom, ui, _fake) = setup("thread:channel:0").await;
+
+    search_for(&mut dom, "antenna").await;
+    assert!(matches!(*ui.view.peek(), View::Search(_)));
+
+    key_down(
+        &dom,
+        &by_id(&dom, "sidebar-search"),
+        Key::Escape,
+        Code::Escape,
+    );
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Thread(ThreadId::Channel(0)));
+    assert_eq!(value_of(&dom, "sidebar-search").as_deref(), Some(""));
+    assert!(results(&dom).is_empty());
+}
+
+#[tokio::test]
+async fn search_shortening_the_text_returns_to_the_previous_view() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    search_for(&mut dom, "antenna").await;
+    assert!(matches!(*ui.view.peek(), View::Search(_)));
+
+    search_for(&mut dom, "a").await;
+
+    assert_eq!(*ui.view.peek(), View::Contacts);
+    assert_eq!(value_of(&dom, "sidebar-search").as_deref(), Some("a"));
 }

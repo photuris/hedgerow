@@ -149,6 +149,40 @@ pub fn hover_title(m: &Message) -> String {
     title
 }
 
+/// Splits `text` into consecutive pieces, flagging the ones that match
+/// `query`. The pieces always add up to `text`.
+///
+/// The match ignores ASCII case only, like the store's `LIKE`, so every hit
+/// the store reports is found here. Pieces are cut on character boundaries,
+/// so any UTF-8 text is safe.
+pub fn highlight<'a>(text: &'a str, query: &str) -> Vec<(&'a str, bool)> {
+    let width = query.len();
+    let mut pieces = Vec::new();
+    let (mut plain_from, mut at) = (0, 0);
+
+    while width > 0 && at < text.len() {
+        if let Some(hit) = text.get(at..at + width)
+            && hit.eq_ignore_ascii_case(query)
+        {
+            if plain_from < at {
+                pieces.push((&text[plain_from..at], false));
+            }
+
+            pieces.push((hit, true));
+            at += width;
+            plain_from = at;
+        } else {
+            at += text[at..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+
+    if plain_from < text.len() {
+        pieces.push((&text[plain_from..], false));
+    }
+
+    pieces
+}
+
 #[cfg(test)]
 mod tests {
     use retkerno_core::model::{Direction, ThreadId};
@@ -372,6 +406,78 @@ mod tests {
                 hover_title(&msg(sent, i64::from(sent))),
                 "Sent 2026-10-14 09:05:00"
             );
+        }
+    }
+
+    mod highlight {
+        use super::*;
+
+        #[test]
+        fn should_flag_every_match_ignoring_ascii_case() {
+            assert_eq!(
+                highlight("Net NET net", "net"),
+                [
+                    ("Net", true),
+                    (" ", false),
+                    ("NET", true),
+                    (" ", false),
+                    ("net", true)
+                ]
+            );
+        }
+
+        #[test]
+        fn should_keep_the_texts_own_case_in_the_hit() {
+            assert_eq!(
+                highlight("Loud and clear", "AND"),
+                [("Loud ", false), ("and", true), (" clear", false)]
+            );
+        }
+
+        #[test]
+        fn should_cut_on_character_boundaries_in_utf8_text() {
+            assert_eq!(
+                highlight("café ☕ café", "é"),
+                [("caf", false), ("é", true), (" ☕ caf", false), ("é", true)]
+            );
+            assert_eq!(
+                highlight("日本語のテスト", "のテ"),
+                [("日本語", false), ("のテ", true), ("スト", false)]
+            );
+        }
+
+        #[test]
+        fn should_not_match_inside_a_multibyte_character() {
+            // 'é' is 0xC3 0xA9; a query of the single byte-width ASCII "ab" must
+            // never be compared against a slice that splits it.
+            assert_eq!(highlight("éé", "ab"), [("éé", false)]);
+        }
+
+        #[test]
+        fn should_return_the_text_whole_when_nothing_matches() {
+            assert_eq!(highlight("hello", "xyz"), [("hello", false)]);
+            assert_eq!(highlight("hi", "longer than the text"), [("hi", false)]);
+        }
+
+        #[test]
+        fn should_return_the_text_whole_for_an_empty_query() {
+            assert_eq!(highlight("hello", ""), [("hello", false)]);
+        }
+
+        #[test]
+        fn should_return_nothing_for_empty_text() {
+            assert!(highlight("", "a").is_empty());
+        }
+
+        #[test]
+        fn should_add_up_to_the_original_text() {
+            let text = "aXbxXc";
+            let joined: String = highlight(text, "x")
+                .iter()
+                .map(|(piece, _)| *piece)
+                .collect();
+
+            assert_eq!(joined, text);
         }
     }
 }

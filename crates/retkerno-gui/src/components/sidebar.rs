@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use retkerno_core::model::{ThreadId, ThreadSummary};
 use retkerno_core::session::ConnState;
 
+use super::Icon;
 use crate::app::{SettingsTab, Ui, View};
 use crate::format;
 
@@ -64,6 +65,7 @@ pub fn Sidebar() -> Element {
 
     rsx! {
         aside { class: "sidebar",
+            SideHead {}
             ConnChip {}
             div { class: "threads",
                 if has_node {
@@ -100,6 +102,57 @@ pub fn Sidebar() -> Element {
             }
             NavFooter {}
             RowMenu { menu }
+        }
+    }
+}
+
+/// The top row: the collapse button and the message search box.
+#[component]
+fn SideHead() -> Element {
+    let ui = use_context::<Ui>();
+    let mut focus = ui.focus_search;
+    let search = (ui.search)();
+
+    // Ctrl+F lands here once the box exists, which includes the render that
+    // follows opening a collapsed sidebar.
+    use_effect(move || {
+        if focus() {
+            focus.set(false);
+
+            let _ = document::eval(
+                "const e = document.getElementById('sidebar-search'); if (e) { e.focus(); e.select(); }",
+            );
+        }
+    });
+
+    rsx! {
+        div { class: "side-head",
+            button {
+                class: "tool",
+                title: "Hide sidebar",
+                onclick: {
+                    let ui = ui.clone();
+
+                    move |_| ui.toggle_sidebar()
+                },
+                Icon { name: "panel-close" }
+            }
+            input {
+                id: "sidebar-search",
+                r#type: "text",
+                placeholder: "Search messages",
+                value: "{search}",
+                oninput: {
+                    let ui = ui.clone();
+
+                    move |evt| ui.set_search(evt.value())
+                },
+                onkeydown: move |evt| {
+                    if evt.key() == Key::Escape {
+                        ui.set_search(String::new());
+                    }
+                },
+            }
         }
     }
 }

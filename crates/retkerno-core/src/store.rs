@@ -403,6 +403,52 @@ impl Store {
         Ok(Some(message))
     }
 
+    /// Finds the addressable messages of `node` whose text or sender contains
+    /// `query`, newest first, at most `limit` of them, each with its resolved
+    /// `thread`.
+    ///
+    /// The query is trimmed; an empty one finds nothing. The match is a SQL
+    /// `LIKE` with `%`, `_`, and `\` in the query taken literally, so it
+    /// ignores case for ASCII letters only. A channel row counts only when
+    /// its key is the current key of some slot; contact rows always count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] on SQLite failure.
+    pub fn search(&self, node: &str, query: &str, limit: u32) -> Result<Vec<Message>> {
+        let query = query.trim();
+
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        let pattern = format!("%{}%", escape_like(query));
+        let conn = self.lock();
+        // Addressability is decided per row by `row_thread` below.
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MESSAGE_COLS}, thread_kind, thread_key FROM messages \
+             WHERE node_id = ?1 AND (text LIKE ?2 ESCAPE '\\' OR sender LIKE ?2 ESCAPE '\\') \
+             ORDER BY id DESC"
+        ))?;
+        let mut rows = stmt.query(params![node, pattern])?;
+        let mut found = Vec::new();
+
+        while found.len() < limit
+            && let Some(r) = rows.next()?
+        {
+            let kind: String = r.get(9)?;
+            let key: String = r.get(10)?;
+            let Some(thread) = row_thread(&conn, node, &kind, &key)? else {
+                continue;
+            };
+
+            found.push(message_from_row(r, thread)?);
+        }
+
+        Ok(found)
+    }
+
     /// Sets a message's delivery status; `ack` of `None` keeps the ack tag.
     ///
     /// # Errors
@@ -748,6 +794,22 @@ fn row_thread(conn: &Connection, node: &str, kind: &str, key: &str) -> Result<Op
     Ok(lowest.map(ThreadId::Channel))
 }
 
+/// Escapes `%`, `_`, and `\` so a `LIKE ... ESCAPE '\'` pattern matches
+/// `text` literally.
+fn escape_like(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+
+    for c in text.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+
+        escaped.push(c);
+    }
+
+    escaped
+}
+
 /// Builds a [`Message`] from [`MESSAGE_COLS`] and an already-known thread.
 fn message_from_row(r: &Row<'_>, thread: ThreadId) -> rusqlite::Result<Message> {
     let direction: String = r.get(1)?;
@@ -862,6 +924,234 @@ mod tests {
             path_len: None,
             snr: None,
             status: DeliveryStatus::Received,
+        }
+    }
+
+    mod search {
+        use super::*;
+
+        /// An incoming message on `thread` from `sender` with a unique clock.
+        fn said(thread: ThreadId, sender: Option<&str>, text: &str, ts: u32) -> NewMessage {
+            NewMessage {
+                thread,
+                direction: Direction::In,
+                sender: sender.map(str::to_string),
+                text: text.into(),
+                sender_ts: ts,
+                received_at: i64::from(ts),
+                path_len: None,
+                snr: None,
+                status: DeliveryStatus::Received,
+            }
+        }
+
+        /// A store with the stored channel `#a` in slot 0.
+        fn store_with_channel() -> Store {
+            let s = Store::open_memory().unwrap();
+
+            s.replace_channels(
+                NODE,
+                &[Channel {
+                    idx: 0,
+                    name: "#a".into(),
+                    secret: [1; 16],
+                }],
+            )
+            .unwrap();
+
+            s
+        }
+
+        /// The texts of the hits for `query`, in order.
+        fn texts(s: &Store, query: &str) -> Vec<String> {
+            s.search(NODE, query, 100)
+                .unwrap()
+                .into_iter()
+                .map(|m| m.text)
+                .collect()
+        }
+
+        #[test]
+        fn should_match_the_text() {
+            let s = store_with_channel();
+
+            s.insert_message(NODE, &said(ThreadId::Channel(0), None, "net at eight", 1))
+                .unwrap();
+            s.insert_message(NODE, &said(ThreadId::Channel(0), None, "lunch", 2))
+                .unwrap();
+
+            assert_eq!(texts(&s, "at eig"), ["net at eight"]);
+        }
+
+        #[test]
+        fn should_match_the_sender() {
+            let s = store_with_channel();
+
+            s.insert_message(NODE, &said(ThreadId::Channel(0), Some("Carol"), "hi", 1))
+                .unwrap();
+            s.insert_message(NODE, &said(ThreadId::Channel(0), Some("Bob"), "yo", 2))
+                .unwrap();
+
+            assert_eq!(texts(&s, "aro"), ["hi"]);
+        }
+
+        #[test]
+        fn should_ignore_ascii_case() {
+            let s = store_with_channel();
+
+            s.insert_message(
+                NODE,
+                &said(ThreadId::Channel(0), Some("Dave"), "Antenna", 1),
+            )
+            .unwrap();
+
+            assert_eq!(texts(&s, "ANTENNA"), ["Antenna"]);
+            assert_eq!(texts(&s, "dAvE"), ["Antenna"]);
+        }
+
+        #[test]
+        fn should_treat_percent_and_underscore_literally() {
+            let s = store_with_channel();
+
+            for (ts, body) in [(1, "50% off"), (2, "a_b"), (3, "axb"), (4, "plain")] {
+                s.insert_message(NODE, &said(ThreadId::Channel(0), None, body, ts))
+                    .unwrap();
+            }
+
+            assert_eq!(texts(&s, "%"), ["50% off"]);
+            assert_eq!(texts(&s, "_"), ["a_b"]);
+            assert_eq!(texts(&s, "a_b"), ["a_b"]);
+        }
+
+        #[test]
+        fn should_treat_a_backslash_literally() {
+            let s = store_with_channel();
+
+            for (ts, body) in [(1, r"C:\temp"), (2, "C:temp")] {
+                s.insert_message(NODE, &said(ThreadId::Channel(0), None, body, ts))
+                    .unwrap();
+            }
+
+            assert_eq!(texts(&s, r"\"), [r"C:\temp"]);
+        }
+
+        #[test]
+        fn should_exclude_another_nodes_rows() {
+            let s = store_with_channel();
+            let other = "bb00000000000000000000000000000000000000000000000000000000000000";
+
+            s.insert_message(NODE, &said(ThreadId::Channel(0), None, "shared word", 1))
+                .unwrap();
+            s.replace_channels(
+                other,
+                &[Channel {
+                    idx: 0,
+                    name: "#a".into(),
+                    secret: [1; 16],
+                }],
+            )
+            .unwrap();
+            s.insert_message(other, &said(ThreadId::Channel(0), None, "shared word", 2))
+                .unwrap();
+
+            // The other radio holds the same channel, so only the node
+            // filter keeps its row out of NODE's results.
+
+            assert_eq!(s.search(NODE, "shared", 10).unwrap().len(), 1);
+            assert_eq!(s.search(other, "shared", 10).unwrap().len(), 1);
+        }
+
+        #[test]
+        fn should_exclude_a_removed_channels_rows() {
+            let s = store_with_channel();
+
+            s.insert_message(NODE, &said(ThreadId::Channel(0), None, "old news", 1))
+                .unwrap();
+            s.replace_channels(NODE, &[]).unwrap();
+
+            // Slot 0 is now empty, so the old channel's rows have no thread.
+            assert!(texts(&s, "old news").is_empty());
+        }
+
+        #[test]
+        fn should_exclude_slot_rows_hidden_by_a_new_channel() {
+            let s = Store::open_memory().unwrap();
+
+            s.insert_message(NODE, &said(ThreadId::Channel(6), None, "slot six", 1))
+                .unwrap();
+
+            assert_eq!(texts(&s, "slot six"), ["slot six"]);
+
+            s.replace_channels(
+                NODE,
+                &[Channel {
+                    idx: 6,
+                    name: "#new".into(),
+                    secret: [6; 16],
+                }],
+            )
+            .unwrap();
+
+            assert!(texts(&s, "slot six").is_empty());
+        }
+
+        #[test]
+        fn should_return_newest_first_and_stop_at_the_limit() {
+            let s = store_with_channel();
+
+            for ts in 1..=5 {
+                s.insert_message(
+                    NODE,
+                    &said(ThreadId::Channel(0), None, &format!("hit {ts}"), ts),
+                )
+                .unwrap();
+            }
+
+            let hits = s.search(NODE, "hit", 3).unwrap();
+            let texts: Vec<&str> = hits.iter().map(|m| m.text.as_str()).collect();
+
+            assert_eq!(texts, ["hit 5", "hit 4", "hit 3"]);
+        }
+
+        #[test]
+        fn should_resolve_the_thread_of_channel_and_contact_hits() {
+            let s = store_with_channel();
+            let contact = ThreadId::Contact("a1a1a1a1a1a1".into());
+
+            s.insert_message(NODE, &said(ThreadId::Channel(0), None, "needle one", 1))
+                .unwrap();
+            s.insert_message(NODE, &said(contact.clone(), None, "needle two", 2))
+                .unwrap();
+
+            let threads: Vec<ThreadId> = s
+                .search(NODE, "needle", 10)
+                .unwrap()
+                .into_iter()
+                .map(|m| m.thread)
+                .collect();
+
+            assert_eq!(threads, [contact, ThreadId::Channel(0)]);
+        }
+
+        #[test]
+        fn should_find_nothing_for_a_blank_query() {
+            let s = store_with_channel();
+
+            s.insert_message(NODE, &said(ThreadId::Channel(0), None, "anything", 1))
+                .unwrap();
+
+            assert!(texts(&s, "").is_empty());
+            assert!(texts(&s, "  \t").is_empty());
+        }
+
+        #[test]
+        fn should_trim_the_query() {
+            let s = store_with_channel();
+
+            s.insert_message(NODE, &said(ThreadId::Channel(0), None, "anything", 1))
+                .unwrap();
+
+            assert_eq!(texts(&s, "  thing "), ["anything"]);
         }
     }
 

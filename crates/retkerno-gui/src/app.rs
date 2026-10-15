@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 use retkerno_core::config::Config;
 use retkerno_core::model::ThreadId;
@@ -15,7 +16,9 @@ use retkerno_core::text;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-use crate::components::{Chat, Contacts, ExportDialog, Settings, Sidebar, Toast};
+use crate::components::{
+    Chat, Contacts, ExportDialog, Icon, SearchResults, Settings, Sidebar, Toast,
+};
 use crate::theme::{self, Theme, Watcher};
 
 /// How long a toast stays up.
@@ -26,6 +29,15 @@ const CLOCK_TICK_SECS: u64 = 30;
 
 /// How long the text dump may take after the exit timer fired.
 const DUMP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Narrowest sidebar the divider allows, in pixels.
+const SIDEBAR_MIN: u32 = 180;
+
+/// Widest sidebar the divider allows, in pixels.
+const SIDEBAR_MAX: u32 = 480;
+
+/// Fewest characters of a search that show results.
+pub const MIN_SEARCH_CHARS: usize = 2;
 
 /// The test hooks, read from the environment once in `main`.
 #[derive(Clone, Default)]
@@ -73,6 +85,8 @@ pub enum View {
     Contacts,
     /// The settings.
     Settings(SettingsTab),
+    /// Message search results for this query, as typed.
+    Search(String),
 }
 
 impl View {
@@ -95,6 +109,61 @@ impl View {
         }
 
         ThreadId::from_parts(kind, key).map(View::Thread)
+    }
+}
+
+/// Keeps a sidebar width within the limits the divider allows.
+pub fn clamp_sidebar(width: u32) -> u32 {
+    width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+}
+
+/// The sidebar width after the divider moved from `start_x` to `x` while the
+/// sidebar was `start_width` wide.
+fn dragged_width(start_width: u32, start_x: f64, x: f64) -> u32 {
+    // A float-to-int `as` saturates, so a far-off pointer cannot overflow.
+    clamp_sidebar((f64::from(start_width) + x - start_x).round() as u32)
+}
+
+/// `config` with the sidebar `width`, or `None` when it already has it.
+fn with_sidebar_width(config: &Config, width: u32) -> Option<Config> {
+    if config.ui.sidebar_width == width {
+        return None;
+    }
+
+    let mut updated = config.clone();
+
+    updated.ui.sidebar_width = width;
+
+    Some(updated)
+}
+
+/// What a global key chord asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shortcut {
+    /// Show or hide the sidebar.
+    ToggleSidebar,
+    /// Open the sidebar and focus the search box.
+    FocusSearch,
+}
+
+/// The shortcut for `key` pressed with `modifiers`: Ctrl+B and Ctrl+F, or
+/// Cmd+B and Cmd+F on macOS. Shift and Alt turn a chord into another one.
+fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
+    let command = modifiers.contains(Modifiers::CONTROL)
+        || (cfg!(target_os = "macos") && modifiers.contains(Modifiers::META));
+
+    if !command || modifiers.intersects(Modifiers::SHIFT | Modifiers::ALT) {
+        return None;
+    }
+
+    let Key::Character(letter) = key else {
+        return None;
+    };
+
+    match letter.to_ascii_lowercase().as_str() {
+        "b" => Some(Shortcut::ToggleSidebar),
+        "f" => Some(Shortcut::FocusSearch),
+        _ => None,
     }
 }
 
@@ -210,6 +279,15 @@ pub fn now_secs() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// A sidebar divider drag in progress.
+#[derive(Clone, Copy)]
+struct Drag {
+    /// Pointer column where the drag began.
+    start_x: f64,
+    /// Sidebar width when the drag began.
+    start_width: u32,
+}
+
 /// Shared state, provided as context by [`App`]. Cheap to clone.
 #[derive(Clone)]
 pub struct Ui {
@@ -235,12 +313,26 @@ pub struct Ui {
     pub now: Signal<i64>,
     /// The contact card to show in the export dialog, if any.
     pub exported: Signal<Option<String>>,
+    /// Whether the sidebar is shown. Not saved.
+    pub sidebar_open: Signal<bool>,
+    /// Sidebar width in pixels, always within the divider's limits.
+    pub sidebar_width: Signal<u32>,
+    /// The text in the sidebar's search box.
+    pub search: Signal<String>,
+    /// Set to ask the sidebar's search box to take focus; the box clears it.
+    pub focus_search: Signal<bool>,
+    /// The message the open chat should scroll to and flash, once.
+    pub reveal: Signal<Option<i64>>,
     /// Kept alive between copies: on X11 the contents die with the handle.
     clipboard: Rc<RefCell<Option<arboard::Clipboard>>>,
     /// Identifies the latest toast, so an old timer does not clear a new one.
     toast_seq: Signal<u64>,
     /// The (thread, node) pair last marked read by opening it.
     opened: Signal<Option<(ThreadId, String)>>,
+    /// The sidebar divider drag in progress, if any.
+    drag: Signal<Option<Drag>>,
+    /// The view a search replaced, which clearing the search brings back.
+    before_search: Signal<Option<View>>,
 }
 
 impl Ui {
@@ -276,10 +368,17 @@ impl Ui {
             view: Signal::new(view),
             toast: Signal::new(None),
             exported: Signal::new(None),
+            sidebar_open: Signal::new(true),
+            sidebar_width: Signal::new(clamp_sidebar(boot.config.ui.sidebar_width)),
+            search: Signal::new(String::new()),
+            focus_search: Signal::new(false),
+            reveal: Signal::new(None),
             clipboard: Rc::new(RefCell::new(None)),
             now: Signal::new(now_secs()),
             toast_seq: Signal::new(0),
             opened: Signal::new(None),
+            drag: Signal::new(None),
+            before_search: Signal::new(None),
         }
     }
 
@@ -388,6 +487,114 @@ impl Ui {
         // Forget the last open so clicking the open thread marks it read again.
         opened.set(None);
         view.set(View::Thread(thread));
+
+        let mut reveal = self.reveal;
+
+        reveal.set(None);
+    }
+
+    /// Opens `thread` and has its chat scroll to message `id` and flash it.
+    pub fn open_message(&self, thread: ThreadId, id: i64) {
+        let mut reveal = self.reveal;
+
+        self.select(thread);
+        reveal.set(Some(id));
+    }
+
+    /// Shows or hides the sidebar.
+    pub fn toggle_sidebar(&self) {
+        let mut open = self.sidebar_open;
+        let shown = *open.peek();
+
+        open.set(!shown);
+    }
+
+    /// Opens the sidebar if needed and asks its search box for focus.
+    fn open_search(&self) {
+        let (mut open, mut focus) = (self.sidebar_open, self.focus_search);
+
+        open.set(true);
+        focus.set(true);
+    }
+
+    /// Runs the action of a global key chord.
+    fn run_shortcut(&self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::ToggleSidebar => self.toggle_sidebar(),
+            Shortcut::FocusSearch => self.open_search(),
+        }
+    }
+
+    /// Takes new text for the search box. From [`MIN_SEARCH_CHARS`] on the
+    /// main region shows the results, remembering the view they replace;
+    /// shorter text brings that view back.
+    pub fn set_search(&self, text: String) {
+        let (mut search, mut view, mut before) = (self.search, self.view, self.before_search);
+        let active = text.trim().chars().count() >= MIN_SEARCH_CHARS;
+        let current = view.peek().clone();
+
+        search.set(text.clone());
+
+        match (active, current) {
+            (true, View::Search(_)) => view.set(View::Search(text)),
+            (true, other) => {
+                before.set(Some(other));
+                view.set(View::Search(text));
+            }
+            (false, View::Search(_)) => view.set(before.take().unwrap_or(View::None)),
+            (false, _) => {}
+        }
+    }
+
+    /// Starts a sidebar divider drag at pointer column `x`.
+    pub fn begin_drag(&self, x: f64) {
+        let mut drag = self.drag;
+
+        drag.set(Some(Drag {
+            start_x: x,
+            start_width: *self.sidebar_width.peek(),
+        }));
+    }
+
+    /// Moves the dragged divider to pointer column `x`; does nothing when no
+    /// drag is on.
+    pub fn drag_to(&self, x: f64) {
+        let Some(drag) = *self.drag.peek() else {
+            return;
+        };
+        let mut width = self.sidebar_width;
+        let dragged = dragged_width(drag.start_width, drag.start_x, x);
+
+        // Skip the write at a limit, or every pointer move would re-render.
+        if *width.peek() != dragged {
+            width.set(dragged);
+        }
+    }
+
+    /// Ends a divider drag and saves the new width when it changed. UI-test
+    /// mode keeps it in memory only.
+    pub fn end_drag(&self) {
+        let mut drag = self.drag;
+
+        if drag.take().is_none() {
+            return;
+        }
+
+        let Some(updated) = with_sidebar_width(&self.config.peek(), *self.sidebar_width.peek())
+        else {
+            return;
+        };
+        let mut config = self.config;
+
+        config.set(updated.clone());
+
+        if self.ui_test {
+            return;
+        }
+
+        if let Err(e) = updated.save() {
+            self.report("Could not save settings", &e);
+        }
     }
 
     /// The node id of the connected radio, `None` unless the session is
@@ -617,17 +824,87 @@ pub fn App() -> Element {
         },
         View::Contacts => rsx! { Contacts {} },
         View::Settings(tab) => rsx! { Settings { tab } },
+        View::Search(query) => rsx! { SearchResults { query } },
+    };
+    let open = (ui.sidebar_open)();
+    let columns = if open {
+        format!("{}px 6px minmax(0, 1fr)", (ui.sidebar_width)())
+    } else {
+        "minmax(0, 1fr)".to_string()
     };
 
     rsx! {
         BaseStyle {}
         div {
             class: "app",
+            // Focusable, so the shortcuts work before anything else has focus.
+            tabindex: "0",
+            onmounted: move |evt| async move {
+                let _ = evt.set_focus(true).await;
+            },
             // No WebKit context menu ("Inspect Element"); rows open their own.
             oncontextmenu: |evt| evt.prevent_default(),
+            onkeydown: {
+                let ui = ui.clone();
+
+                move |evt: KeyboardEvent| {
+                    if let Some(shortcut) = shortcut(&evt.key(), evt.modifiers()) {
+                        evt.prevent_default();
+                        ui.run_shortcut(shortcut);
+                    }
+                }
+            },
             style { {theme_css()} }
-            Sidebar {}
-            main { {main_view} }
+            div {
+                class: if (ui.drag)().is_some() { "panes dragging" } else { "panes" },
+                style: "grid-template-columns: {columns}",
+                onmousemove: {
+                    let ui = ui.clone();
+
+                    move |evt: MouseEvent| ui.drag_to(evt.client_coordinates().x)
+                },
+                onmouseup: {
+                    let ui = ui.clone();
+
+                    move |_| ui.end_drag()
+                },
+                onmouseleave: {
+                    let ui = ui.clone();
+
+                    move |_| ui.end_drag()
+                },
+                if open {
+                    Sidebar {}
+                    div {
+                        class: "resizer",
+                        onmousedown: {
+                            let ui = ui.clone();
+
+                            move |evt: MouseEvent| {
+                                evt.prevent_default();
+                                ui.begin_drag(evt.client_coordinates().x);
+                            }
+                        },
+                    }
+                }
+                main {
+                    if !open {
+                        div { class: "main-bar",
+                            button {
+                                class: "tool",
+                                title: "Show sidebar",
+                                onclick: {
+                                    let ui = ui.clone();
+
+                                    move |_| ui.toggle_sidebar()
+                                },
+                                Icon { name: "panel-open" }
+                            }
+                        }
+                    }
+                    {main_view}
+                }
+            }
             ExportDialog {}
             Toast {}
         }
@@ -745,6 +1022,115 @@ mod tests {
             ] {
                 assert_eq!(View::parse_start(value), None, "{value:?}");
             }
+        }
+    }
+
+    mod clamp_sidebar {
+        use super::*;
+
+        #[test]
+        fn should_raise_a_narrow_sidebar_to_180() {
+            assert_eq!(clamp_sidebar(0), 180);
+            assert_eq!(clamp_sidebar(179), 180);
+        }
+
+        #[test]
+        fn should_cut_a_wide_sidebar_to_480() {
+            assert_eq!(clamp_sidebar(481), 480);
+            assert_eq!(clamp_sidebar(u32::MAX), 480);
+        }
+
+        #[test]
+        fn should_keep_the_limits_and_everything_between() {
+            assert_eq!(clamp_sidebar(180), 180);
+            assert_eq!(clamp_sidebar(260), 260);
+            assert_eq!(clamp_sidebar(480), 480);
+        }
+    }
+
+    mod dragged_width {
+        use super::*;
+
+        #[test]
+        fn should_follow_the_pointer_from_the_start_width() {
+            assert_eq!(dragged_width(260, 100.0, 140.0), 300);
+            assert_eq!(dragged_width(260, 100.0, 60.0), 220);
+        }
+
+        #[test]
+        fn should_clamp_the_sidebar_far_beyond_either_limit() {
+            assert_eq!(dragged_width(260, 100.0, 1.0e9), 480);
+            assert_eq!(dragged_width(260, 100.0, -1.0e9), 180);
+        }
+    }
+
+    mod with_sidebar_width {
+        use super::*;
+
+        #[test]
+        fn should_return_none_when_the_width_is_unchanged() {
+            assert_eq!(with_sidebar_width(&Config::default(), 260), None);
+        }
+
+        #[test]
+        fn should_change_only_the_sidebar_width() {
+            let updated = with_sidebar_width(&Config::default(), 300).unwrap();
+            let mut expected = Config::default();
+
+            expected.ui.sidebar_width = 300;
+
+            assert_eq!(updated, expected);
+        }
+    }
+
+    mod shortcut {
+        use super::*;
+
+        fn letter(c: &str) -> Key {
+            Key::Character(c.to_string())
+        }
+
+        #[test]
+        fn should_map_ctrl_b_to_the_sidebar_toggle() {
+            assert_eq!(
+                shortcut(&letter("b"), Modifiers::CONTROL),
+                Some(Shortcut::ToggleSidebar)
+            );
+            assert_eq!(
+                shortcut(&letter("B"), Modifiers::CONTROL),
+                Some(Shortcut::ToggleSidebar)
+            );
+        }
+
+        #[test]
+        fn should_map_ctrl_f_to_search_focus() {
+            assert_eq!(
+                shortcut(&letter("f"), Modifiers::CONTROL),
+                Some(Shortcut::FocusSearch)
+            );
+        }
+
+        #[test]
+        fn should_ignore_plain_letters_and_other_chords() {
+            assert_eq!(shortcut(&letter("b"), Modifiers::empty()), None);
+            assert_eq!(shortcut(&letter("x"), Modifiers::CONTROL), None);
+            assert_eq!(shortcut(&Key::Enter, Modifiers::CONTROL), None);
+            assert_eq!(
+                shortcut(&letter("b"), Modifiers::CONTROL | Modifiers::SHIFT),
+                None
+            );
+            assert_eq!(
+                shortcut(&letter("b"), Modifiers::CONTROL | Modifiers::ALT),
+                None
+            );
+        }
+
+        #[test]
+        fn should_take_meta_only_on_macos() {
+            assert_eq!(
+                shortcut(&letter("b"), Modifiers::META).is_some(),
+                cfg!(target_os = "macos")
+            );
         }
     }
 

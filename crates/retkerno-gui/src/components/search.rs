@@ -1,0 +1,138 @@
+//! The message search results shown in the main region.
+
+use dioxus::prelude::*;
+use retkerno_core::model::{Message, ThreadId, ThreadSummary};
+
+use crate::app::Ui;
+use crate::format;
+
+/// How many results the list shows at most.
+const RESULT_LIMIT: u32 = 200;
+
+/// The title to show for `thread`: its row in `summaries`, else a name made
+/// from the thread itself (a slot with no stored channel has no row).
+fn thread_title(summaries: &[ThreadSummary], thread: &ThreadId) -> String {
+    summaries.iter().find(|s| s.thread == *thread).map_or_else(
+        || match thread {
+            ThreadId::Channel(idx) => format!("Channel {idx}"),
+            ThreadId::Contact(prefix) => prefix.clone(),
+        },
+        |s| s.title.clone(),
+    )
+}
+
+/// The newest messages of the connected node that contain `query`, newest
+/// first. The query is the text as typed.
+#[component]
+pub fn SearchResults(query: String) -> Element {
+    let ui = use_context::<Ui>();
+    let _ = (ui.revision)();
+
+    let query = query.trim().to_string();
+    let (hits, summaries) = match (ui.node)() {
+        Some(node) => (
+            ui.store
+                .search(&node, &query, RESULT_LIMIT)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("search messages: {e}");
+                    Vec::new()
+                }),
+            ui.store.threads(&node).unwrap_or_default(),
+        ),
+        None => (Vec::new(), Vec::new()),
+    };
+    let now = (ui.now)();
+
+    rsx! {
+        div { class: "results",
+            if hits.is_empty() {
+                div { class: "msgs-empty", "No messages match" }
+            }
+            for message in hits {
+                Hit {
+                    key: "{message.id}",
+                    title: thread_title(&summaries, &message.thread),
+                    query: query.clone(),
+                    now,
+                    message,
+                }
+            }
+        }
+    }
+}
+
+/// One result: thread title, sender, time, and the text with the match marked.
+/// Clicking it opens the thread at that message.
+#[component]
+fn Hit(message: Message, title: String, query: String, now: i64) -> Element {
+    let ui = use_context::<Ui>();
+    let time = format::relative_time(now, format::display_ts(&message));
+    let (thread, id) = (message.thread.clone(), message.id);
+
+    rsx! {
+        div {
+            class: "result",
+            onclick: move |_| ui.open_message(thread.clone(), id),
+            div { class: "result-top",
+                div { class: "result-title", "{title}" }
+                if let Some(sender) = &message.sender {
+                    div { class: "result-sender", {marked(sender, &query)} }
+                }
+                div { class: "result-time", "{time}" }
+            }
+            div { class: "result-text", {marked(&message.text, &query)} }
+        }
+    }
+}
+
+/// `text` with every match of `query` wrapped in `<mark>`.
+fn marked(text: &str, query: &str) -> Element {
+    let pieces = format::highlight(text, query);
+
+    rsx! {
+        for (i , (piece , hit)) in pieces.into_iter().enumerate() {
+            span { key: "{i}",
+                if hit {
+                    mark { "{piece}" }
+                } else {
+                    "{piece}"
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(thread: ThreadId, title: &str) -> ThreadSummary {
+        ThreadSummary {
+            thread,
+            title: title.into(),
+            last_text: None,
+            last_at: None,
+            unread: 0,
+        }
+    }
+
+    mod thread_title {
+        use super::*;
+
+        #[test]
+        fn should_use_the_summary_title_when_the_thread_is_listed() {
+            let listed = [summary(ThreadId::Channel(1), "#test")];
+
+            assert_eq!(thread_title(&listed, &ThreadId::Channel(1)), "#test");
+        }
+
+        #[test]
+        fn should_name_an_unlisted_slot_and_an_unlisted_contact() {
+            assert_eq!(thread_title(&[], &ThreadId::Channel(4)), "Channel 4");
+            assert_eq!(
+                thread_title(&[], &ThreadId::Contact("a1a1a1".into())),
+                "a1a1a1"
+            );
+        }
+    }
+}

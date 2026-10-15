@@ -78,12 +78,15 @@ impl Default for ConnectionConfig {
 pub struct UiConfig {
     /// Window decorations: `"auto"`, `"on"`, or `"off"`.
     pub decorations: String,
+    /// Width of the sidebar in pixels; the GUI clamps it to its limits.
+    pub sidebar_width: u32,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
             decorations: "auto".into(),
+            sidebar_width: 260,
         }
     }
 }
@@ -163,6 +166,35 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod sidebar_width {
+        use super::*;
+
+        #[test]
+        fn should_default_to_260_when_an_old_file_lacks_it() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+
+            fs::write(&path, "[ui]\ndecorations = \"on\"\n").unwrap();
+
+            let config = Config::load_at(&path).unwrap();
+
+            assert_eq!(config.ui.sidebar_width, 260);
+            assert_eq!(config.ui.decorations, "on");
+        }
+
+        #[test]
+        fn should_round_trip_through_a_saved_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            let mut config = Config::default();
+
+            config.ui.sidebar_width = 333;
+            config.save_at(&path).unwrap();
+
+            assert_eq!(Config::load_at(&path).unwrap().ui.sidebar_width, 333);
+        }
+    }
 
     mod save_at {
         use super::*;

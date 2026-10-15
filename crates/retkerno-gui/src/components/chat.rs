@@ -1,5 +1,9 @@
 //! A conversation: header, message list, and composer.
 
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::Duration;
+
 use chrono::NaiveDate;
 use dioxus::prelude::*;
 use retkerno_core::model::{DeliveryStatus, Direction, Message, ThreadId};
@@ -12,6 +16,9 @@ use crate::format;
 
 /// How many of the newest messages a thread shows.
 const MESSAGE_LIMIT: u32 = 500;
+
+/// How long a message found by search stays highlighted.
+const FLASH: Duration = Duration::from_secs(2);
 
 /// Title and detail line of a thread header.
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +70,47 @@ fn header_for(store: &Store, node: &str, thread: &ThreadId) -> Header {
     }
 }
 
+/// The newest messages of `thread` on `node`: at least `limit` of them, and
+/// when `reveal` names a message, enough to include it. The count doubles
+/// until the oldest loaded message is no newer than `reveal` or the thread
+/// is exhausted, and `limit` keeps the final count so later reloads still
+/// include the message.
+fn load_messages(
+    store: &Store,
+    node: &str,
+    thread: &ThreadId,
+    reveal: Option<i64>,
+    limit: &Cell<u32>,
+) -> Vec<Message> {
+    loop {
+        let wanted = limit.get();
+        let messages = store.messages(node, thread, wanted).unwrap_or_else(|e| {
+            tracing::warn!("read messages: {e}");
+            Vec::new()
+        });
+        let exhausted = u32::try_from(messages.len()).is_ok_and(|n| n < wanted);
+        let reaches = reveal.is_none_or(|id| messages.first().is_some_and(|m| m.id <= id));
+
+        if exhausted || reaches {
+            return messages;
+        }
+
+        limit.set(wanted.saturating_mul(2));
+    }
+}
+
+/// The script that brings message `reveal` to the middle of the list, or the
+/// newest message to the bottom when there is no such message.
+fn scroll_script(reveal: Option<i64>) -> String {
+    let target = reveal.map_or_else(String::new, |id| {
+        format!("const m = document.getElementById('msg-{id}'); if (m) {{ m.scrollIntoView({{ block: 'center' }}); return; }}")
+    });
+
+    format!(
+        "const e = document.getElementById('msgs'); {target} if (e) {{ e.scrollTop = e.scrollHeight; }}"
+    )
+}
+
 /// The messages of `thread`, each with the day separator that precedes it.
 fn with_day_labels(messages: &[Message], now: i64) -> Vec<(Message, Option<String>)> {
     let mut previous: Option<NaiveDate> = None;
@@ -102,6 +150,9 @@ pub fn Chat(thread: ThreadId, node: Option<String>, secret: Option<[u8; 16]>) ->
             )
         }
     });
+    // The message a search result pointed at, read once when the chat opens.
+    let reveal = use_hook(|| *ui.reveal.peek());
+    let limit = use_hook(|| Rc::new(Cell::new(MESSAGE_LIMIT)));
     let messages = use_memo({
         let (ui, thread) = (ui.clone(), thread.clone());
 
@@ -109,12 +160,7 @@ pub fn Chat(thread: ThreadId, node: Option<String>, secret: Option<[u8; 16]>) ->
             let _ = (ui.revision)();
 
             (ui.node)().map_or_else(Vec::new, |node| {
-                ui.store
-                    .messages(&node, &thread, MESSAGE_LIMIT)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("read messages: {e}");
-                        Vec::new()
-                    })
+                load_messages(&ui.store, &node, &thread, reveal, &limit)
             })
         }
     });
@@ -146,15 +192,41 @@ pub fn Chat(thread: ThreadId, node: Option<String>, secret: Option<[u8; 16]>) ->
         }
     });
 
-    // Scroll when the thread opens and whenever the newest displayed message changes.
+    // Scroll when the thread opens and whenever the newest displayed message
+    // changes. Opening from a search result scrolls to that message instead.
+    let opening = use_hook(|| Rc::new(Cell::new(true)));
+
     use_effect(move || {
         let _ = newest();
-        let _ = document::eval(
-            "const e = document.getElementById('msgs'); if (e) { e.scrollTop = e.scrollHeight; }",
-        );
+
+        let target = opening.replace(false).then_some(reveal).flatten();
+        let _ = document::eval(&scroll_script(target));
+    });
+
+    // Flash the found message, and let the next opening start fresh.
+    let mut flash = use_signal(|| None::<i64>);
+
+    use_future({
+        let ui = ui.clone();
+
+        move || {
+            let mut shared = ui.reveal;
+
+            async move {
+                let Some(id) = reveal else {
+                    return;
+                };
+
+                shared.set(None);
+                flash.set(Some(id));
+                tokio::time::sleep(FLASH).await;
+                flash.set(None);
+            }
+        }
     });
 
     let is_channel = matches!(thread, ThreadId::Channel(_));
+    let flashing = flash();
     let items = with_day_labels(&messages.read(), (ui.now)());
     let Header { title, detail } = header();
 
@@ -181,7 +253,14 @@ pub fn Chat(thread: ThreadId, node: Option<String>, secret: Option<[u8; 16]>) ->
                     div { class: "msgs-empty", "No messages yet" }
                 }
                 for (message , day) in items {
-                    Bubble { key: "{message.id}", message, day, is_channel, node: node.clone() }
+                    Bubble {
+                        key: "{message.id}",
+                        flash: flashing == Some(message.id),
+                        message,
+                        day,
+                        is_channel,
+                        node: node.clone(),
+                    }
                 }
             }
             Composer { thread: thread.clone(), node: node.clone(), secret }
@@ -196,6 +275,7 @@ fn Bubble(
     day: Option<String>,
     is_channel: bool,
     node: Option<String>,
+    flash: bool,
 ) -> Element {
     let ui = use_context::<Ui>();
     let outgoing = message.direction == Direction::Out;
@@ -211,7 +291,14 @@ fn Bubble(
         if let Some(day) = day {
             div { class: "day", "{day}" }
         }
-        div { class: if outgoing { "msg out" } else { "msg in" },
+        div {
+            id: "msg-{id}",
+            class: match (outgoing, flash) {
+                (true, false) => "msg out",
+                (false, false) => "msg in",
+                (true, true) => "msg out flash",
+                (false, true) => "msg in flash",
+            },
             if let Some(sender) = sender {
                 div {
                     class: "msg-sender",
@@ -236,6 +323,32 @@ fn Bubble(
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod scroll_script {
+        use super::*;
+
+        #[test]
+        fn should_aim_at_the_revealed_message_and_fall_back_to_the_bottom() {
+            let script = scroll_script(Some(42));
+
+            assert!(script.contains("getElementById('msg-42')"), "{script}");
+            assert!(script.contains("scrollIntoView"), "{script}");
+            assert!(script.contains("e.scrollTop = e.scrollHeight"), "{script}");
+        }
+
+        #[test]
+        fn should_only_scroll_to_the_bottom_without_a_reveal() {
+            let script = scroll_script(None);
+
+            assert!(!script.contains("msg-"), "{script}");
+            assert!(script.contains("e.scrollTop = e.scrollHeight"), "{script}");
         }
     }
 }
