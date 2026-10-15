@@ -425,7 +425,8 @@ impl Store {
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         let pattern = format!("%{}%", escape_like(query));
         let conn = self.lock();
-        // Addressability is decided per row by `row_thread` below.
+        // Read once: a per-row lookup made hidden matches cost a query each.
+        let channels = stored_channels(&conn, node)?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {MESSAGE_COLS}, thread_kind, thread_key FROM messages \
              WHERE node_id = ?1 AND (text LIKE ?2 ESCAPE '\\' OR sender LIKE ?2 ESCAPE '\\') \
@@ -439,7 +440,12 @@ impl Store {
         {
             let kind: String = r.get(9)?;
             let key: String = r.get(10)?;
-            let Some(thread) = row_thread(&conn, node, &kind, &key)? else {
+            let thread = if kind == "channel" {
+                resolve_channel_key(&channels, &key)
+            } else {
+                Some(ThreadId::Contact(key))
+            };
+            let Some(thread) = thread else {
                 continue;
             };
 
@@ -772,26 +778,26 @@ fn row_thread(conn: &Connection, node: &str, kind: &str, key: &str) -> Result<Op
         return Ok(Some(ThreadId::Contact(key.to_string())));
     }
 
-    if let Some(slot) = key.strip_prefix(SLOT_KEY_PREFIX) {
-        let Ok(idx) = slot.parse::<u8>() else {
-            return Ok(None);
-        };
-        let occupied: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM channels WHERE node_id = ?1 AND idx = ?2)",
-            params![node, idx],
-            |r| r.get(0),
-        )?;
+    Ok(resolve_channel_key(&stored_channels(conn, node)?, key))
+}
 
-        return Ok((!occupied).then_some(ThreadId::Channel(idx)));
+/// Maps a channel row key to its thread given the node's stored `channels`
+/// (as [`stored_channels`] reads them, by slot): the lowest slot holding the
+/// secret, the slot itself for an `idx:<n>` key of an empty slot, else `None`.
+fn resolve_channel_key(channels: &[(u8, String, String)], key: &str) -> Option<ThreadId> {
+    if let Some(slot) = key.strip_prefix(SLOT_KEY_PREFIX) {
+        let idx = slot.parse::<u8>().ok()?;
+
+        return channels
+            .iter()
+            .all(|(slot_idx, ..)| *slot_idx != idx)
+            .then_some(ThreadId::Channel(idx));
     }
 
-    let lowest: Option<u8> = conn.query_row(
-        "SELECT min(idx) FROM channels WHERE node_id = ?1 AND secret_hex = ?2",
-        params![node, key],
-        |r| r.get(0),
-    )?;
-
-    Ok(lowest.map(ThreadId::Channel))
+    channels
+        .iter()
+        .find(|(_, _, secret_hex)| secret_hex == key)
+        .map(|(idx, ..)| ThreadId::Channel(*idx))
 }
 
 /// Escapes `%`, `_`, and `\` so a `LIKE ... ESCAPE '\'` pattern matches
@@ -1033,6 +1039,44 @@ mod tests {
             }
 
             assert_eq!(texts(&s, r"\"), [r"C:\temp"]);
+        }
+
+        #[test]
+        fn should_keep_search_cost_low_when_fifty_thousand_matches_are_hidden() {
+            let s = store_with_channel();
+
+            for ts in 1..=300 {
+                s.insert_message(
+                    NODE,
+                    &said(ThreadId::Channel(0), None, "visible antenna", ts),
+                )
+                .unwrap();
+            }
+
+            // Newer than every visible row, in a channel no slot holds.
+            s.lock()
+                .execute_batch(&format!(
+                    "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<50000) \
+                     INSERT INTO messages(node_id, thread_kind, thread_key, direction, text, \
+                                          sender_ts, received_at, status) \
+                     SELECT '{NODE}', 'channel', 'removed-secret', 'in', 'hidden antenna '||x, \
+                            x, x, 'received' FROM n"
+                ))
+                .unwrap();
+
+            let started = std::time::Instant::now();
+            let hits = s.search(NODE, "antenna", 200).unwrap();
+            let elapsed = started.elapsed();
+
+            assert_eq!(hits.len(), 200);
+            assert!(
+                hits.iter().all(|m| m.text == "visible antenna"),
+                "a hidden row was returned"
+            );
+            assert!(
+                elapsed < std::time::Duration::from_millis(300),
+                "search took {elapsed:?}"
+            );
         }
 
         #[test]
