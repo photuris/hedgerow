@@ -1131,3 +1131,38 @@ async fn should_reconnect_when_battery_poll_hits_radio_error() {
     wait_for("second start", || count(&f, "start") == 2).await;
     wait_for("connected again", || connected(&s)).await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn should_wait_a_full_interval_after_a_long_drain_completes() {
+    let f = fake();
+    let store = Store::open_memory().unwrap();
+
+    f.state().next_message_delay_ms = 9_000;
+
+    for ts in 0..3 {
+        f.state().inbox.push_back(IncomingMessage {
+            thread: ThreadId::Channel(0),
+            sender: None,
+            text: format!("slow backlog {ts}"),
+            sender_ts: ts,
+            path_len: None,
+            snr: None,
+        });
+    }
+
+    let s = spawn(&f, &store, true);
+
+    // The connect drain takes 36 s: three messages and the empty answer.
+    wait_for("connected", || connected(&s)).await;
+    tokio::time::sleep(Duration::from_secs(37)).await;
+
+    assert_eq!(
+        count(&f, "next_message"),
+        4,
+        "a safety drain began right after the long drain finished"
+    );
+
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    assert!(count(&f, "next_message") > 4, "no safety drain 30 s after");
+}

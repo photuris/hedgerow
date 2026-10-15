@@ -488,7 +488,7 @@ impl Radio {
     pub async fn next_message(&self) -> Result<Option<IncomingMessage>> {
         match self {
             Radio::Mesh(r) => r.next_message().await,
-            Radio::Fake(r) => r.next_message(),
+            Radio::Fake(r) => r.next_message().await,
         }
     }
 
