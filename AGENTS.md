@@ -11,6 +11,10 @@ Read `README.md` first. This file holds what the code does not say.
 - `radio::Radio` is an enum: `Mesh` wraps `meshcore_rs::MeshCore`, `Fake`
   is an in-memory radio for tests and UI test mode. `meshcore-rs` has no
   public constructor for a custom transport, so the fake sits at this enum.
+- Notifications: `hedgerow_core::notify::Notifier` decides every post from
+  the store, with the clock passed in, so its tests control time.
+  `crates/hedgerow-gui/src/notifier.rs` only feeds it events and shows
+  what it returns. Keep timing and filtering logic in core.
 - The session is an actor task. A connect attempt runs as a spawned task.
   The actor keeps handling commands while it is pending.
 - The original build plan and its review history are in the gitignored

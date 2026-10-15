@@ -30,6 +30,15 @@ servers, repeater administration, and telemetry are not in it yet.
   `config.toml` as `ui.sidebar_width`). Press Ctrl+B (Cmd+B on macOS) or
   use the panel button to hide or show it. The collapsed state is not
   saved.
+- Raises desktop notifications for direct messages and for channel
+  messages that mention your radio's name (`@[Name]` or `@Name`), while
+  the window does not have focus. Each conversation raises at most one
+  notification a minute; messages that arrive inside that minute are
+  summed up in one notification when it ends ("#test (3 new)"). Right-click
+  a conversation to change this: a channel can notify on mentions only,
+  on every message, or never; a direct thread can notify or be muted. A
+  muted conversation shows a crossed-out bell. On Linux, clicking a
+  notification opens its conversation.
 - Contacts: search, filter by kind, message, share as a `meshcore://`
   URI, import a URI, reset a path, remove, and send adverts.
 - Channels: add hashtag channels (the key comes from the name), add
@@ -159,9 +168,19 @@ cargo run -p hedgerow-core --example probe -- --ble AA:BB:CC:DD:EE:FF
   message.
 - Some radios reboot when a program opens their USB serial port. The
   LilyGo T-LoRa Pager does this. Use Bluetooth for those radios.
+- Notifications on Windows appear under PowerShell's name, and clicking
+  one does nothing, until Hedgerow has an installer that registers it
+  with Windows. On macOS, clicking a notification does not open the
+  conversation, and Hedgerow cannot tell when macOS refuses to show one.
+  Notifications identify themselves as the `.app` bundle's ID
+  (`io.github.photuris.hedgerow`), so use the bundle that
+  `scripts/bundle-macos.sh` builds.
+- When the app falls far behind on radio events, it can skip the
+  notification for a few messages. The messages are still stored and
+  marked unread.
 
 ## Not in this first pass
 
 GPS and maps, room-server login, repeater administration, telemetry, path
-discovery and trace, private-key export or import, desktop notifications,
-message search, Linux packaging, and a notarized macOS build.
+discovery and trace, private-key export or import, Linux packaging, a
+Windows installer, and a notarized macOS build.
