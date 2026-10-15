@@ -2,7 +2,7 @@
 
 A desktop chat client for [MeshCore](https://meshcore.co.uk) companion
 radios. It's written in Rust, with a Dioxus 0.7 desktop GUI. "Retkerno" is
-Esperanto for "net core".
+Esperanto for "meshcore".
 
 This is a first pass. It covers chat in channels and direct threads,
 unread tracking, contacts, channels, and device settings. GPS, maps, room
