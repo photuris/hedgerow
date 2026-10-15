@@ -8,17 +8,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 use hedgerow_core::config::Config;
-use hedgerow_core::model::{Channel, ThreadId};
+use hedgerow_core::model::{Channel, NotifyMode, ThreadId};
 use hedgerow_core::radio::FakeRadio;
 use hedgerow_core::session::{Command, ConnState, Connector, Guard, Session, Update};
 use hedgerow_core::store::Store;
 use hedgerow_core::text;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::components::{
     Chat, Contacts, ExportDialog, Icon, SearchResults, Settings, Sidebar, Toast,
 };
+use crate::notifier;
 use crate::theme::{self, Theme, Watcher};
 
 /// How long a toast stays up.
@@ -268,12 +269,24 @@ pub fn should_mark_read(previous: Option<i64>, newest: Option<i64>, focused: boo
     focused && newest > previous
 }
 
-/// Whether the window has focus. Tests have no native window, so they
-/// report a focused one.
+#[cfg(test)]
+thread_local! {
+    /// What [`window_focused`] reports in tests.
+    static TEST_FOCUS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Sets what [`window_focused`] reports in this test's thread.
+#[cfg(test)]
+pub fn set_test_focus(focused: bool) {
+    TEST_FOCUS.with(|cell| cell.set(focused));
+}
+
+/// Whether the window has focus. Tests have no native window; they report a
+/// focused one unless [`set_test_focus`] says otherwise.
 pub fn window_focused() -> bool {
     #[cfg(test)]
     {
-        true
+        TEST_FOCUS.with(std::cell::Cell::get)
     }
 
     #[cfg(not(test))]
@@ -537,6 +550,43 @@ impl Ui {
         reveal.set(Some(id));
     }
 
+    /// Opens the conversation of row `id` of `node`, for a click on its
+    /// notification, and raises the window. A click that races a radio switch
+    /// is dropped, so it never opens another radio's history; so is a row
+    /// whose channel is gone.
+    pub(crate) fn open_notification(&self, node: &str, id: i64) {
+        let held = connected_node(&self.session.state());
+
+        if held.as_deref() != Some(node) || self.node.peek().as_deref() != Some(node) {
+            return;
+        }
+
+        match self.store.message(node, id) {
+            Ok(Some(message)) => {
+                // The row's current slot, so a moved channel opens where it is now.
+                self.select(message.thread);
+
+                #[cfg(not(test))]
+                dioxus::desktop::window().set_focus();
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("open notification: {e}"),
+        }
+    }
+
+    /// Sets when `thread` raises a notification, on the current node.
+    pub fn set_notify(&self, thread: &ThreadId, mode: NotifyMode) {
+        let Some(node) = self.node.peek().clone() else {
+            return;
+        };
+
+        if let Err(e) = self.store.set_notify(&node, thread, mode) {
+            self.report("Could not change notifications", &e);
+        }
+
+        self.bump();
+    }
+
     /// Shows or hides the sidebar.
     pub fn toggle_sidebar(&self) {
         let mut open = self.sidebar_open;
@@ -727,6 +777,14 @@ struct ThemeWatch {
     rx: RefCell<Option<UnboundedReceiver<Theme>>>,
 }
 
+/// The channel that carries clicks on notifications to the UI thread.
+struct Clicks {
+    /// Handed to the notifier.
+    tx: UnboundedSender<(String, i64)>,
+    /// Taken by the task that drains the clicks.
+    rx: RefCell<Option<UnboundedReceiver<(String, i64)>>>,
+}
+
 /// Root component.
 #[component]
 pub fn App() -> Element {
@@ -777,6 +835,41 @@ pub fn App() -> Element {
             let ui = ui.clone();
 
             async move { ui.run_updates().await }
+        }
+    });
+
+    // Clicks on notifications come from notify-rust's threads; a tokio channel
+    // carries them to the UI thread.
+    let clicks = use_hook(|| {
+        let (tx, rx) = unbounded_channel();
+
+        Rc::new(Clicks {
+            tx,
+            rx: RefCell::new(Some(rx)),
+        })
+    });
+
+    use_future({
+        let (ui, clicks) = (ui.clone(), clicks.clone());
+
+        move || notifier::run(ui.clone(), clicks.tx.clone())
+    });
+
+    use_future({
+        let ui = ui.clone();
+
+        move || {
+            let (ui, clicks) = (ui.clone(), clicks.clone());
+
+            async move {
+                let Some(mut rx) = clicks.rx.borrow_mut().take() else {
+                    return;
+                };
+
+                while let Some((node, id)) = rx.recv().await {
+                    ui.open_notification(&node, id);
+                }
+            }
         }
     });
 

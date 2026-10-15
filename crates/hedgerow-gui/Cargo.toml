@@ -19,6 +19,7 @@ dioxus.workspace = true
 dirs.workspace = true
 getrandom.workspace = true
 notify.workspace = true
+notify-rust.workspace = true
 serde.workspace = true
 tokio.workspace = true
 toml.workspace = true

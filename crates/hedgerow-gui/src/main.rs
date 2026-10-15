@@ -3,6 +3,7 @@
 mod app;
 mod components;
 mod format;
+mod notifier;
 mod theme;
 #[cfg(test)]
 mod ui_tests;

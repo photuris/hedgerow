@@ -1,15 +1,16 @@
 //! The sidebar: connection chip, conversation lists, and navigation.
 
 use dioxus::prelude::*;
-use hedgerow_core::model::{ThreadId, ThreadSummary};
+use hedgerow_core::model::{NotifyMode, ThreadId, ThreadSummary};
 use hedgerow_core::session::ConnState;
 
 use super::Icon;
 use crate::app::{SettingsTab, Ui, View, keep_typing};
 use crate::format;
 
-/// Where and for which thread the row menu is open.
-type MenuAt = (ThreadId, f64, f64);
+/// Where, for which thread, and with which notification mode the row menu is
+/// open.
+type MenuAt = (ThreadId, f64, f64, NotifyMode);
 
 /// The left column.
 #[component]
@@ -228,6 +229,7 @@ fn Row(
         .unwrap_or_default();
     let preview = summary.last_text.clone().unwrap_or_default();
     let (select_thread, menu_thread) = (summary.thread.clone(), summary.thread.clone());
+    let notify = summary.notify;
 
     rsx! {
         div {
@@ -238,10 +240,17 @@ fn Row(
 
                 let at = evt.client_coordinates();
 
-                onmenu.call((menu_thread.clone(), at.x, at.y));
+                onmenu.call((menu_thread.clone(), at.x, at.y, notify));
             },
             div { class: "row-top",
-                div { class: "row-title", "{summary.title}" }
+                div { class: "row-title",
+                    "{summary.title}"
+                    if notify == NotifyMode::Mute {
+                        span { class: "muted-icon", title: "Muted",
+                            Icon { name: "bell-off", size: 14 }
+                        }
+                    }
+                }
                 div { class: "row-time", "{time}" }
             }
             div { class: "row-bottom",
@@ -260,11 +269,25 @@ fn Row(
 fn RowMenu(menu: Signal<Option<MenuAt>>) -> Element {
     let ui = use_context::<Ui>();
     let mut menu = menu;
-    let Some((thread, x, y)) = menu() else {
+    let Some((thread, x, y, current)) = menu() else {
         return rsx! {};
     };
-    let (read_thread, unread_thread) = (thread.clone(), thread);
+    let (read_thread, unread_thread) = (thread.clone(), thread.clone());
     let read_ui = ui.clone();
+    let modes: &[(&str, NotifyMode)] = match thread {
+        ThreadId::Channel(_) => &[
+            ("Mentions only", NotifyMode::Default),
+            ("All messages", NotifyMode::All),
+            ("Mute", NotifyMode::Mute),
+        ],
+        ThreadId::Contact(_) => &[("Notify", NotifyMode::Default), ("Mute", NotifyMode::Mute)],
+    };
+    // A contact has no "all" mode of its own: it already notifies on every
+    // message, so a stored `All` shows as `Notify`.
+    let current = match (&thread, current) {
+        (ThreadId::Contact(_), NotifyMode::All) => NotifyMode::Default,
+        (_, mode) => mode,
+    };
 
     rsx! {
         div {
@@ -300,6 +323,26 @@ fn RowMenu(menu: Signal<Option<MenuAt>>) -> Element {
                     menu.set(None);
                 },
                 "Mark as unread"
+            }
+            div { class: "menu-sep" }
+            for (label, mode) in modes.iter().copied() {
+                button {
+                    key: "{label}",
+                    class: if mode == current { "menu-check" },
+                    onclick: {
+                        let (ui, thread) = (ui.clone(), thread.clone());
+
+                        move |_| {
+                            ui.set_notify(&thread, mode);
+                            menu.set(None);
+                        }
+                    },
+                    if mode == current {
+                        "✓ {label}"
+                    } else {
+                        "{label}"
+                    }
+                }
             }
         }
     }

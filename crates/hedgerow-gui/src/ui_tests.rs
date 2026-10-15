@@ -3,13 +3,15 @@
 //! desktop session; events are delivered straight to the VDOM, and the page
 //! is read back from the rendered virtual nodes.
 //!
-//! Test seams in the app: `app::window_focused` reports a focused window and
-//! `app::set_window_title` does nothing under `cfg(test)`, because tests have
-//! no native window. The fake radio makes `Ui::ui_test` true, so the
+//! Test seams in the app: `app::window_focused` reports a focused window
+//! (unless `app::set_test_focus` says otherwise), `app::set_window_title`
+//! does nothing under `cfg(test)`, because tests have no native window, and
+//! `notifier::show` collects posts instead of raising OS notifications. The fake radio makes `Ui::ui_test` true, so the
 //! connection tab never saves a config or lists serial ports or Bluetooth.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use dioxus::core::{
@@ -23,12 +25,14 @@ use dioxus::html::{
 };
 use dioxus::prelude::*;
 use hedgerow_core::config::Config;
-use hedgerow_core::model::{DeliveryStatus, Direction, NewMessage, ThreadId};
-use hedgerow_core::radio::{FakeRadio, FakeSent};
+use hedgerow_core::model::{DeliveryStatus, Direction, NewMessage, NotifyMode, ThreadId};
+use hedgerow_core::notify::Post;
+use hedgerow_core::radio::{FakeRadio, FakeSent, IncomingMessage};
 use hedgerow_core::session::{Command, ConnState};
 use hedgerow_core::store::Store;
 
-use crate::app::{App, Boot, Hooks, Ui, View, now_secs};
+use crate::app::{self, App, Boot, Hooks, Ui, View, now_secs};
+use crate::notifier;
 
 /// The warning the device confirmation appends when radio parameters change.
 const RADIO_WARNING: &str = "Radios only hear each other with identical frequency, bandwidth, spreading factor, and coding rate.";
@@ -337,6 +341,10 @@ fn in_app<R>(dom: &VirtualDom, f: impl FnOnce() -> R) -> R {
 /// radio and waits for the connection.
 async fn setup(view: &str) -> (VirtualDom, Ui, FakeRadio) {
     dioxus::html::set_event_converter(Box::new(SerializedHtmlEventConverter));
+
+    // A test thread may have run an earlier test: start focused, with no posts.
+    app::set_test_focus(true);
+    notifier::take_posted();
 
     let fake = hedgerow_core::fixtures::demo_radio();
     let boot = Boot {
@@ -2070,4 +2078,268 @@ async fn ctrl_b_outside_inputs_still_toggles_the_sidebar() {
     ctrl(&dom, "b");
     settle(&mut dom).await;
     assert!(sidebar_shown(&dom));
+}
+
+// ── 014: notifications ──────────────────────────────────────────────────────
+
+/// A `sender_ts` no earlier push used, so the store never folds two pushes.
+fn fresh_ts() -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(2_000_000_000);
+
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The direct thread with the demo contact Alice.
+fn alice() -> ThreadId {
+    ThreadId::Contact("a1".repeat(6))
+}
+
+/// A direct message row from Alice for `node`, not yet stored.
+fn direct_from_alice(text: &str) -> NewMessage {
+    NewMessage {
+        thread: alice(),
+        sender: None,
+        ..incoming(text)
+    }
+}
+
+/// Queues a direct message `text` on the radio for `thread`, waits until the
+/// session has stored it and the notifier has handled it, and returns its row
+/// id.
+async fn push_and_wait(
+    dom: &mut VirtualDom,
+    ui: &Ui,
+    fake: &FakeRadio,
+    thread: ThreadId,
+    text: &str,
+) -> i64 {
+    let node = device(ui).node_id;
+
+    fake.push_incoming(IncomingMessage {
+        thread,
+        sender: None,
+        text: text.into(),
+        sender_ts: fresh_ts(),
+        path_len: None,
+        snr: None,
+    });
+
+    let mut id = None;
+
+    for _ in 0..500 {
+        settle(dom).await;
+
+        if let Some(row) = ui.store.search(&node, text, 1).unwrap().pop() {
+            id = Some(row.id);
+
+            break;
+        }
+    }
+
+    let id = id.unwrap_or_else(|| panic!("{text:?} was never stored"));
+
+    for _ in 0..500 {
+        if notifier::handled(id) {
+            return id;
+        }
+
+        settle(dom).await;
+    }
+
+    panic!("the notifier never handled row {id}");
+}
+
+/// The sidebar row of the conversation titled `title`.
+fn row_titled(dom: &VirtualDom, title: &str) -> El {
+    els(dom)
+        .into_iter()
+        .find(|e| (e.has_class("row") || e.has_class("row selected")) && e.text.starts_with(title))
+        .unwrap_or_else(|| panic!("row {title:?} missing"))
+}
+
+/// Opens the right-click menu of the row titled `title`.
+async fn open_row_menu(dom: &mut VirtualDom, title: &str) {
+    event(
+        dom,
+        &row_titled(dom, title),
+        "contextmenu",
+        SerializedMouseData::default(),
+    );
+    settle(dom).await;
+}
+
+/// The stored notification mode of `thread` on `node`.
+fn mode_of(ui: &Ui, node: &str, thread: &ThreadId) -> NotifyMode {
+    ui.store
+        .threads(node)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.thread == *thread)
+        .unwrap()
+        .notify
+}
+
+/// Makes the UI show another radio than the one the session holds.
+fn show_other_node(dom: &VirtualDom, ui: &Ui) {
+    in_app(dom, || {
+        let mut node = ui.node;
+
+        node.set(Some(other_node()));
+    });
+}
+
+#[tokio::test]
+async fn notification_for_a_direct_message_when_unfocused() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+
+    app::set_test_focus(false);
+
+    let id = push_and_wait(&mut dom, &ui, &fake, alice(), "pingalpha").await;
+    let posted = notifier::take_posted();
+
+    assert_eq!(posted.len(), 1, "{posted:?}");
+    assert_eq!(posted[0].id, id);
+    assert_eq!(posted[0].count, 1);
+    assert_eq!(posted[0].body, "pingalpha");
+}
+
+#[tokio::test]
+async fn no_notification_while_focused() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+
+    push_and_wait(&mut dom, &ui, &fake, alice(), "pingbravo").await;
+
+    assert_eq!(notifier::take_posted(), Vec::<Post>::new());
+}
+
+#[tokio::test]
+async fn muted_from_the_row_menu_stays_silent() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+
+    open_row_menu(&mut dom, "Alice").await;
+    click(&dom, &button(&dom, "Mute", false));
+    settle(&mut dom).await;
+
+    assert_eq!(mode_of(&ui, &node, &alice()), NotifyMode::Mute);
+    assert!(
+        els(&dom).iter().any(|e| e.has_class("muted-icon")),
+        "the muted row shows the bell-off icon"
+    );
+
+    app::set_test_focus(false);
+    push_and_wait(&mut dom, &ui, &fake, alice(), "pingcharlie").await;
+
+    assert_eq!(notifier::take_posted(), Vec::<Post>::new());
+}
+
+#[tokio::test]
+async fn row_menu_marks_the_current_mode() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let title = ui
+        .store
+        .threads(&node)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.thread == ThreadId::Channel(0))
+        .unwrap()
+        .title;
+
+    open_row_menu(&mut dom, &title).await;
+
+    assert!(button(&dom, "✓ Mentions only", false).has_class("menu-check"));
+    assert_eq!(button(&dom, "All messages", false).attr("class"), None);
+
+    click(&dom, &button(&dom, "All messages", false));
+    settle(&mut dom).await;
+    open_row_menu(&mut dom, &title).await;
+
+    assert!(button(&dom, "✓ All messages", false).has_class("menu-check"));
+    assert_eq!(button(&dom, "Mentions only", false).attr("class"), None);
+}
+
+#[tokio::test]
+async fn posts_even_when_the_ui_node_lags() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+
+    show_other_node(&dom, &ui);
+    app::set_test_focus(false);
+
+    push_and_wait(&mut dom, &ui, &fake, alice(), "pingdelta").await;
+
+    let posted = notifier::take_posted();
+
+    assert_eq!(posted.len(), 1, "{posted:?}");
+    assert_eq!(posted[0].node, node);
+}
+
+#[tokio::test]
+async fn notification_click_opens_the_rows_thread() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let id = ui
+        .store
+        .insert_message(&node, &direct_from_alice("clickme"))
+        .unwrap()
+        .unwrap();
+
+    in_app(&dom, || ui.open_notification(&node, id));
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Thread(alice()));
+}
+
+#[tokio::test]
+async fn notification_click_for_another_radio_is_ignored() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let id = ui
+        .store
+        .insert_message(&other_node(), &direct_from_alice("elsewhere"))
+        .unwrap()
+        .unwrap();
+
+    show_other_node(&dom, &ui);
+    in_app(&dom, || ui.open_notification(&other_node(), id));
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Contacts);
+}
+
+#[tokio::test]
+async fn notification_click_waits_for_the_ui_node() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let id = ui
+        .store
+        .insert_message(&node, &direct_from_alice("not yet"))
+        .unwrap()
+        .unwrap();
+
+    show_other_node(&dom, &ui);
+    in_app(&dom, || ui.open_notification(&node, id));
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Contacts);
+}
+
+#[tokio::test]
+async fn notification_click_for_a_replaced_channel_is_ignored() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let id = ui
+        .store
+        .insert_message(&node, &incoming("old channel text"))
+        .unwrap()
+        .unwrap();
+    let mut channels = ui.store.channels(&node).unwrap();
+
+    channels[0].secret = [0xEE; 16];
+    ui.store.replace_channels(&node, &channels).unwrap();
+
+    in_app(&dom, || ui.open_notification(&node, id));
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Contacts);
 }
