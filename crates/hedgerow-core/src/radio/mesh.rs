@@ -29,6 +29,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// and 20 slots over BLE need more than [`COMMAND_TIMEOUT`].
 const CHANNELS_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Requests for one channel slot before replies for other slots count as a
+/// failed read.
+const SLOT_ATTEMPTS: usize = 3;
+
 /// How long the full contact list may take to arrive.
 const CONTACTS_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -437,7 +441,12 @@ async fn within<T>(
 /// Reads slots `0..max` through `send` and keeps the ones with a name.
 ///
 /// The whole loop shares one [`CHANNELS_TIMEOUT`], so slow replies cannot
-/// add up past it. `send` takes a frame and awaits the matching reply.
+/// add up past it. `send` takes a frame and awaits the next channel reply.
+///
+/// That reply can belong to an earlier request: one extra frame on the link
+/// (a repeated BLE notification, a late answer) shifts every later reply by
+/// one slot. A reply for another slot is dropped and the slot asked again,
+/// up to [`SLOT_ATTEMPTS`] times.
 async fn read_channels<F, Fut>(max: u8, mut send: F) -> Result<Vec<Channel>>
 where
     F: FnMut(Vec<u8>) -> Fut,
@@ -447,10 +456,27 @@ where
         let mut found = Vec::new();
 
         for idx in 0..max {
-            let event = send(vec![CMD_GET_CHANNEL, idx]).await?;
+            let mut attempt = 1;
+            let info = loop {
+                let event = send(vec![CMD_GET_CHANNEL, idx]).await?;
 
-            let EventPayload::ChannelInfo(info) = event.payload else {
-                return Err(Error::Radio(format!("unexpected reply for channel {idx}")));
+                let EventPayload::ChannelInfo(info) = event.payload else {
+                    return Err(Error::Radio(format!("unexpected reply for channel {idx}")));
+                };
+
+                if info.channel_idx == idx {
+                    break info;
+                }
+
+                if attempt == SLOT_ATTEMPTS {
+                    return Err(Error::Radio(format!(
+                        "channel {idx}: replies kept naming slot {}",
+                        info.channel_idx
+                    )));
+                }
+
+                tracing::warn!(slot = idx, got = info.channel_idx, "stray channel reply");
+                attempt += 1;
             };
 
             if info.name.is_empty() {
@@ -458,7 +484,7 @@ where
             }
 
             found.push(Channel {
-                idx: info.channel_idx,
+                idx,
                 name: info.name,
                 secret: info.secret,
             });
@@ -897,6 +923,8 @@ mod tests {
     }
 
     mod read_channels {
+        use std::collections::VecDeque;
+
         use meshcore_rs::events::ChannelInfoData;
 
         use super::*;
@@ -925,6 +953,56 @@ mod tests {
                 "result was {result:?}"
             );
             assert_eq!(started.elapsed(), CHANNELS_TIMEOUT);
+        }
+
+        /// A channel reply for `idx`, named after its slot.
+        fn reply(idx: u8) -> MeshCoreEvent {
+            MeshCoreEvent::new(
+                EventType::ChannelInfo,
+                EventPayload::ChannelInfo(ChannelInfoData {
+                    channel_idx: idx,
+                    name: format!("slot {idx}"),
+                    secret: [idx; 16],
+                }),
+            )
+        }
+
+        #[tokio::test]
+        async fn should_skip_a_repeated_reply_and_keep_every_slot_once() {
+            // The link delivers slot 1's reply twice, so every later request
+            // first sees the reply meant for the slot before it.
+            let mut link = VecDeque::new();
+            let result = read_channels(4, |frame| {
+                let idx = frame[1];
+
+                link.push_back(reply(idx));
+
+                if idx == 1 {
+                    link.push_back(reply(idx));
+                }
+
+                let next = link.pop_front();
+
+                async move { Ok(next.unwrap()) }
+            })
+            .await
+            .unwrap();
+            let slots: Vec<_> = result.iter().map(|c| (c.idx, c.name.as_str())).collect();
+
+            assert_eq!(
+                slots,
+                [(0, "slot 0"), (1, "slot 1"), (2, "slot 2"), (3, "slot 3")]
+            );
+        }
+
+        #[tokio::test]
+        async fn should_fail_when_replies_keep_naming_another_slot() {
+            let result = read_channels(4, |_| async { Ok(reply(7)) }).await;
+
+            assert!(
+                matches!(&result, Err(Error::Radio(m)) if m == "channel 0: replies kept naming slot 7"),
+                "result was {result:?}"
+            );
         }
 
         #[tokio::test(start_paused = true)]
