@@ -37,6 +37,9 @@ const SIDEBAR_MIN: u32 = 180;
 /// Widest sidebar the divider allows, in pixels.
 const SIDEBAR_MAX: u32 = 480;
 
+/// Narrowest main pane, in pixels, before the sidebar folds away.
+const MAIN_MIN: u32 = 360;
+
 /// Fewest characters of a search that show results.
 pub const MIN_SEARCH_CHARS: usize = 2;
 
@@ -349,6 +352,11 @@ pub struct Ui {
     pub sidebar_open: Signal<bool>,
     /// Sidebar width in pixels, always within the divider's limits.
     pub sidebar_width: Signal<u32>,
+    /// Whether the window is too narrow for the sidebar and [`MAIN_MIN`].
+    narrow: Signal<bool>,
+    /// Whether narrowing the window hid the sidebar, so widening it again
+    /// brings the sidebar back. Showing or hiding it by hand clears this.
+    folded: Signal<bool>,
     /// The text in the sidebar's search box.
     pub search: Signal<String>,
     /// Set to ask the sidebar's search box to take focus; the box clears it.
@@ -402,6 +410,8 @@ impl Ui {
             exported: Signal::new(None),
             sidebar_open: Signal::new(true),
             sidebar_width: Signal::new(clamp_sidebar(boot.config.ui.sidebar_width)),
+            narrow: Signal::new(false),
+            folded: Signal::new(false),
             search: Signal::new(String::new()),
             focus_search: Signal::new(false),
             reveal: Signal::new(None),
@@ -589,18 +599,42 @@ impl Ui {
 
     /// Shows or hides the sidebar.
     pub fn toggle_sidebar(&self) {
-        let mut open = self.sidebar_open;
+        let (mut open, mut folded) = (self.sidebar_open, self.folded);
         let shown = *open.peek();
 
         open.set(!shown);
+        folded.set(false);
     }
 
     /// Opens the sidebar if needed and asks its search box for focus.
     fn open_search(&self) {
-        let (mut open, mut focus) = (self.sidebar_open, self.focus_search);
+        let (mut open, mut focus, mut folded) = (self.sidebar_open, self.focus_search, self.folded);
 
         open.set(true);
         focus.set(true);
+        folded.set(false);
+    }
+
+    /// Takes the window width in pixels. Becoming narrower than the sidebar
+    /// plus [`MAIN_MIN`] hides the sidebar; widening past that again shows
+    /// it, unless it was shown or hidden by hand in between.
+    pub fn set_window_width(&self, width: f64) {
+        let (mut was_narrow, mut open, mut folded) = (self.narrow, self.sidebar_open, self.folded);
+        let narrow = width < f64::from(*self.sidebar_width.peek() + MAIN_MIN);
+
+        if narrow == *was_narrow.peek() {
+            return;
+        }
+
+        was_narrow.set(narrow);
+
+        if narrow && *open.peek() {
+            open.set(false);
+            folded.set(true);
+        } else if !narrow && *folded.peek() {
+            open.set(true);
+            folded.set(false);
+        }
     }
 
     /// Runs the action of a global key chord.
@@ -868,6 +902,29 @@ pub fn App() -> Element {
 
                 while let Some((node, id)) = rx.recv().await {
                     ui.open_notification(&node, id);
+                }
+            }
+        }
+    });
+
+    // The webview reports its width on every resize. Headless tests have no
+    // webview; the eval fails there and the loop ends.
+    use_future({
+        let ui = ui.clone();
+
+        move || {
+            let ui = ui.clone();
+
+            async move {
+                let mut width = document::eval(
+                    "const send = () => dioxus.send(window.innerWidth);
+                     window.addEventListener('resize', send);
+                     send();
+                     await new Promise(() => {});",
+                );
+
+                while let Ok(w) = width.recv::<f64>().await {
+                    ui.set_window_width(w);
                 }
             }
         }

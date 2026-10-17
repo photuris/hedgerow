@@ -83,6 +83,9 @@ button.tool { flex: none; display: inline-flex; align-items: center; padding: 4p
 .icon { flex: none; color: var(--rk-muted); }
 button.tool:hover:not(:disabled) .icon { color: var(--fg); }
 
+/* The sidebar's top row and the bar that replaces it when collapsed share one box, so the toggle stays put. */
+.side-head, .main-bar { flex: none; display: flex; align-items: center; height: 44px; padding: 0 8px; border-bottom: 1px solid var(--border); }
+
 /* Sidebar */
 .sidebar {
   min-width: 0; min-height: 0;
@@ -90,7 +93,7 @@ button.tool:hover:not(:disabled) .icon { color: var(--fg); }
   background: var(--rk-dark-background);
   border-right: 1px solid var(--border);
 }
-.side-head { display: flex; align-items: center; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
+.side-head { gap: 4px; }
 .side-head input { flex: 1; min-width: 0; }
 .conn { display: flex; align-items: center; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border); }
 .conn-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--rk-muted); }
@@ -142,7 +145,6 @@ button.tool:hover:not(:disabled) .icon { color: var(--fg); }
 
 /* Main */
 main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.main-bar { flex: none; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--rk-muted); }
 
 /* Chat */

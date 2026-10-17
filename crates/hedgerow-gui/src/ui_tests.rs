@@ -1691,6 +1691,47 @@ async fn sidebar_toggle_button_collapses_and_reopens_keeping_the_width() {
 }
 
 #[tokio::test]
+async fn sidebar_folds_in_a_narrow_window_and_returns_when_it_widens() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let width = *ui.sidebar_width.peek();
+    let resize = |dom: &VirtualDom, w: u32| in_app(dom, || ui.set_window_width(f64::from(w)));
+
+    resize(&dom, width + 360);
+    settle(&mut dom).await;
+    assert!(
+        sidebar_shown(&dom),
+        "room for the sidebar and the main pane"
+    );
+
+    resize(&dom, width + 359);
+    settle(&mut dom).await;
+    assert!(sidebar_gone(&dom), "too narrow folds it");
+
+    resize(&dom, width + 360);
+    settle(&mut dom).await;
+    assert!(sidebar_shown(&dom), "widening brings a folded sidebar back");
+
+    click(&dom, &titled_button(&dom, "Hide sidebar"));
+    resize(&dom, 400);
+    resize(&dom, 1200);
+    settle(&mut dom).await;
+    assert!(sidebar_gone(&dom), "a sidebar hidden by hand stays hidden");
+
+    click(&dom, &titled_button(&dom, "Show sidebar"));
+    resize(&dom, 400);
+    settle(&mut dom).await;
+    assert!(sidebar_gone(&dom), "narrowing folds it again");
+
+    click(&dom, &titled_button(&dom, "Show sidebar"));
+    resize(&dom, 1200);
+    settle(&mut dom).await;
+    assert!(
+        sidebar_shown(&dom),
+        "a sidebar shown by hand while narrow stays shown"
+    );
+}
+
+#[tokio::test]
 async fn sidebar_ctrl_b_toggles_and_other_chords_do_not() {
     let (mut dom, _ui, _fake) = setup("contacts").await;
 

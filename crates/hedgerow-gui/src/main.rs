@@ -80,7 +80,7 @@ fn main() {
     let window = WindowBuilder::new()
         .with_title("Hedgerow")
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
-        .with_min_inner_size(LogicalSize::new(800.0, 500.0))
+        .with_min_inner_size(LogicalSize::new(360.0, 320.0))
         .with_decorations(want_decorations(&boot.config.ui.decorations));
 
     // `with_window` replaces the whole window builder, so the icon goes on after it.
