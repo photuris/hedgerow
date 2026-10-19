@@ -1,6 +1,6 @@
 # Maintainer: Joshua Pruitt
 pkgname=hedgerow-git
-pkgver=r0.0000000
+pkgver=r39.27f3f1c
 pkgrel=1
 pkgdesc="Desktop chat client for MeshCore companion radios"
 arch=(x86_64 aarch64)
