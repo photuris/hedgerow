@@ -31,7 +31,7 @@ use hedgerow_core::radio::{FakeRadio, FakeSent, IncomingMessage};
 use hedgerow_core::session::{Command, ConnState};
 use hedgerow_core::store::Store;
 
-use crate::app::{self, App, Boot, Hooks, Ui, View, now_secs};
+use crate::app::{self, App, Boot, Hooks, SettingsTab, Ui, View, now_secs};
 use crate::notifier;
 
 /// The warning the device confirmation appends when radio parameters change.
@@ -56,9 +56,10 @@ impl El {
         self.attrs.get(name).map(String::as_str)
     }
 
-    /// Whether the element has the CSS class `class` (exactly).
+    /// Whether the element's class list includes `class`.
     fn has_class(&self, class: &str) -> bool {
-        self.attr("class") == Some(class)
+        self.attr("class")
+            .is_some_and(|list| list.split_whitespace().any(|c| c == class))
     }
 
     /// Whether the element is disabled.
@@ -563,7 +564,7 @@ async fn channel_commands_and_modal_close() {
     let page = els(&dom);
     let row = page
         .iter()
-        .position(|e| e.has_class("channel-name") && e.text == "#smoke")
+        .position(|e| e.has_class("cell-name") && e.text == "#smoke")
         .unwrap();
     let remove = page[row..]
         .iter()
@@ -605,10 +606,19 @@ async fn channel_commands_and_modal_close() {
 
     click(&dom, &remove);
     settle(&mut dom).await;
-    click(&dom, &button(&dom, "Remove", true));
+
+    let dialog = els(&dom)
+        .into_iter()
+        .find(|e| e.has_class("dialog"))
+        .unwrap();
+
+    key_down(&dom, &dialog, Key::Enter, Code::Enter);
     settle(&mut dom).await;
 
-    assert!(!fake.state().channels.iter().any(|c| c.name == "#smoke"));
+    assert!(
+        !fake.state().channels.iter().any(|c| c.name == "#smoke"),
+        "Enter confirms the removal"
+    );
     assert!(
         fake.state().calls.iter().any(|c| c == "clear_channel:3"),
         "{:?}",
@@ -936,7 +946,7 @@ async fn hidden_tcp_port_does_not_block_ble_save() {
 
     let before = fake.state().calls.len();
 
-    click(&dom, &button(&dom, "Save and connect", false));
+    click(&dom, &button(&dom, "Save", false));
     settle(&mut dom).await;
 
     assert_eq!(
@@ -966,11 +976,64 @@ async fn invalid_tcp_port_still_blocks_a_tcp_save() {
     type_in(&dom, "tcp-host", "radio.invalid");
     type_in(&dom, "tcp-port", "oops");
     dom.render_immediate_to_vec();
-    click(&dom, &button(&dom, "Save and connect", false));
+    click(&dom, &button(&dom, "Save", false));
     settle(&mut dom).await;
 
     assert!(page_text(&dom).contains("The TCP port must be a number from 0 to 65535"));
     assert_ne!(ui.config.peek().connection.tcp_host, "radio.invalid");
+}
+
+#[tokio::test]
+async fn save_waits_for_a_change_then_closes_back_to_the_view_it_replaced() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+
+    in_app(&dom, || ui.open_settings(SettingsTab::Connection));
+    settle(&mut dom).await;
+    assert!(
+        button(&dom, "Save", false).disabled(),
+        "nothing to save yet"
+    );
+
+    type_in(&dom, "ble-device", "Other Node");
+    dom.render_immediate_to_vec();
+    click(&dom, &button(&dom, "Save", false));
+    settle(&mut dom).await;
+
+    assert_eq!(ui.config.peek().connection.ble_device, "Other Node");
+    assert_eq!(*ui.view.peek(), View::Contacts);
+}
+
+#[tokio::test]
+async fn close_and_escape_drop_the_draft() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let saved = ui.config.peek().connection.ble_device.clone();
+
+    in_app(&dom, || ui.open_settings(SettingsTab::Connection));
+    settle(&mut dom).await;
+    type_in(&dom, "ble-device", "Other Node");
+    dom.render_immediate_to_vec();
+    click(&dom, &button(&dom, "Close", false));
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Contacts);
+    assert_eq!(ui.config.peek().connection.ble_device, saved);
+
+    in_app(&dom, || ui.open_settings(SettingsTab::Connection));
+    settle(&mut dom).await;
+    assert_eq!(
+        value_of(&dom, "ble-device").as_deref(),
+        Some(saved.as_str()),
+        "a reopened page starts from the saved settings"
+    );
+
+    let page = els(&dom)
+        .into_iter()
+        .find(|e| e.has_class("settings"))
+        .unwrap();
+
+    key_down(&dom, &page, Key::Escape, Code::Escape);
+    settle(&mut dom).await;
+    assert_eq!(*ui.view.peek(), View::Contacts);
 }
 
 #[tokio::test]
@@ -1008,7 +1071,7 @@ async fn wait_session(ui: &Ui, predicate: impl Fn(&ConnState) -> bool) {
 fn chat_title(dom: &VirtualDom) -> String {
     els(dom)
         .into_iter()
-        .find(|e| e.has_class("chat-title"))
+        .find(|e| e.has_class("pane-title"))
         .unwrap()
         .text
 }
@@ -2194,7 +2257,7 @@ async fn push_and_wait(
 fn row_titled(dom: &VirtualDom, title: &str) -> El {
     els(dom)
         .into_iter()
-        .find(|e| (e.has_class("row") || e.has_class("row selected")) && e.text.starts_with(title))
+        .find(|e| e.has_class("row") && e.text.starts_with(title))
         .unwrap_or_else(|| panic!("row {title:?} missing"))
 }
 

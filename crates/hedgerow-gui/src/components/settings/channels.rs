@@ -154,9 +154,16 @@ pub fn Channels() -> Element {
     };
 
     rsx! {
-        div { class: "channel-list",
+        div {
             if channels().is_empty() {
                 div { class: "hint", "No channels yet" }
+            } else {
+                div { class: "table-head",
+                    div { class: "col-slot num", "Slot" }
+                    div { class: "cell-name", "Name" }
+                    div { class: "col-kind", "Kind" }
+                    div { class: "col-secret", "Key" }
+                }
             }
             for ch in channels() {
                 {
@@ -167,11 +174,11 @@ pub fn Channels() -> Element {
                     let drawn = drawn.clone();
 
                     rsx! {
-                        div { key: "{ch.idx}", class: "channel-row",
-                            div { class: "channel-slot", "{ch.idx}" }
-                            div { class: "channel-name", "{ch.name}" }
-                            div { class: "channel-kind", "{channel_kind(&ch)}" }
-                            code { class: "channel-key", if revealed { "{key}" } else { "••••••••" } }
+                        div { key: "{ch.idx}", class: "table-row",
+                            div { class: "col-slot num cell-muted", "{ch.idx}" }
+                            div { class: "cell-name", "{ch.name}" }
+                            div { class: "col-kind cell-muted", "{channel_kind(&ch)}" }
+                            code { class: "col-secret cell-key cell-muted", if revealed { "{key}" } else { "••••••••" } }
                             button {
                                 class: "link",
                                 onclick: move |_| {

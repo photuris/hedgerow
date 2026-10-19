@@ -1,5 +1,6 @@
-//! Modal dialogs: the generic [`Modal`] frame and the [`Confirm`] question,
-//! and [`Pending`], the state of a confirmation that sends a radio command.
+//! Floating things: the generic [`Modal`] frame, the [`Confirm`] question,
+//! the [`ContextMenu`] frame, and [`Pending`], the state of a confirmation
+//! that sends a radio command.
 
 use dioxus::prelude::*;
 use hedgerow_core::model::DeviceInfo;
@@ -77,7 +78,7 @@ pub fn use_pending<T: Clone + 'static>() -> Signal<Option<Pending<T>>> {
 }
 
 /// A centred dialog over a dimmed backdrop. Closes on Escape and when the
-/// backdrop is clicked.
+/// backdrop is clicked; clicks inside stay inside.
 #[component]
 pub fn Modal(title: String, onclose: EventHandler<()>, children: Element) -> Element {
     rsx! {
@@ -90,6 +91,9 @@ pub fn Modal(title: String, onclose: EventHandler<()>, children: Element) -> Ele
                     let _ = evt.set_focus(true).await;
                 },
                 onkeydown: move |evt| {
+                    // Nothing else sees keys while the dialog is open.
+                    evt.stop_propagation();
+
                     if evt.key() == Key::Escape {
                         onclose.call(());
                     }
@@ -101,9 +105,10 @@ pub fn Modal(title: String, onclose: EventHandler<()>, children: Element) -> Ele
     }
 }
 
-/// A yes/no question: `lines` are the body, `confirm_label` names the action.
-/// Escape and Cancel call `oncancel`. With `needs_connection` the confirm
-/// button is disabled unless the session is connected.
+/// A yes/no question: `lines` are the body, `confirm_label` names the action
+/// as a verb. Enter and the primary button confirm; Escape, Cancel and the
+/// backdrop cancel. With `needs_connection` the confirm button is disabled
+/// unless the session is connected.
 #[component]
 pub fn Confirm(
     title: String,
@@ -117,22 +122,78 @@ pub fn Confirm(
     let offline = needs_connection && !matches!((ui.state)(), ConnState::Connected(_));
 
     rsx! {
-        Modal { title, onclose: oncancel,
-            div { class: "dialog-body",
-                for (i , line) in lines.iter().enumerate() {
-                    div { key: "{i}", "{line}" }
+        div { class: "overlay", onclick: move |_| oncancel.call(()),
+            div {
+                class: "dialog",
+                tabindex: "0",
+                onclick: |evt| evt.stop_propagation(),
+                onmounted: move |evt| async move {
+                    let _ = evt.set_focus(true).await;
+                },
+                onkeydown: move |evt| {
+                    evt.stop_propagation();
+
+                    match evt.key() {
+                        Key::Enter if !offline => {
+                            evt.prevent_default();
+                            onconfirm.call(());
+                        }
+                        Key::Escape => {
+                            evt.prevent_default();
+                            oncancel.call(());
+                        }
+                        _ => {}
+                    }
+                },
+                div { class: "dialog-title", "{title}" }
+                div { class: "dialog-body",
+                    for (i , line) in lines.iter().enumerate() {
+                        div { key: "{i}", "{line}" }
+                    }
+                }
+                div { class: "dialog-buttons",
+                    button { onclick: move |_| oncancel.call(()), "Cancel" }
+                    button {
+                        class: "primary",
+                        disabled: offline,
+                        title: if offline { Some("Not connected") } else { None },
+                        onclick: move |_| onconfirm.call(()),
+                        "{confirm_label}"
+                    }
                 }
             }
-            div { class: "dialog-buttons",
-                button { onclick: move |_| oncancel.call(()), "Cancel" }
-                button {
-                    class: "primary",
-                    disabled: offline,
-                    title: if offline { Some("Not connected") } else { None },
-                    onclick: move |_| onconfirm.call(()),
-                    "{confirm_label}"
+        }
+    }
+}
+
+/// A right-click menu at viewport position `(x, y)`: a transparent backdrop
+/// that closes it on any click or right-click, Escape closes it, and the
+/// items are the `children` (plain `button`s; `✓ ` before the current
+/// choice, a `div.menu-sep` between groups).
+#[component]
+pub fn ContextMenu(x: f64, y: f64, onclose: EventHandler<()>, children: Element) -> Element {
+    rsx! {
+        div {
+            class: "menu-backdrop",
+            onclick: move |_| onclose.call(()),
+            oncontextmenu: move |evt| {
+                evt.prevent_default();
+                onclose.call(());
+            },
+        }
+        div {
+            class: "menu",
+            style: "left: {x}px; top: {y}px",
+            tabindex: "0",
+            onmounted: move |evt| async move {
+                let _ = evt.set_focus(true).await;
+            },
+            onkeydown: move |evt| {
+                if evt.key() == Key::Escape {
+                    onclose.call(());
                 }
-            }
+            },
+            {children}
         }
     }
 }

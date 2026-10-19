@@ -44,11 +44,18 @@ pub fn SearchResults(query: String) -> Element {
         None => (Vec::new(), Vec::new(), Vec::new()),
     };
     let now = (ui.now)();
+    let detail = result_count(hits.len(), &query);
 
     rsx! {
-        div { class: "results",
+        div { class: "pane-head",
+            div { class: "pane-head-text",
+                div { class: "pane-title", "Search" }
+                div { class: "pane-detail", "{detail}" }
+            }
+        }
+        div { class: "scroll",
             if hits.is_empty() {
-                div { class: "msgs-empty", "No messages match" }
+                div { class: "empty", "No messages match" }
             }
             for message in hits {
                 Hit {
@@ -61,6 +68,16 @@ pub fn SearchResults(query: String) -> Element {
                 }
             }
         }
+    }
+}
+
+/// The header's detail line: how many messages match `query`, and that only
+/// the newest are listed when there are more than [`RESULT_LIMIT`].
+fn result_count(count: usize, query: &str) -> String {
+    match count {
+        1 => format!("1 message matches “{query}”"),
+        n if n >= RESULT_LIMIT as usize => format!("Newest {n} messages matching “{query}”"),
+        n => format!("{n} messages match “{query}”"),
     }
 }
 
@@ -139,6 +156,17 @@ mod tests {
                 thread_title(&[], &ThreadId::Contact("a1a1a1".into())),
                 "a1a1a1"
             );
+        }
+    }
+
+    mod result_count {
+        use super::*;
+
+        #[test]
+        fn should_say_newest_when_the_list_is_capped() {
+            assert_eq!(result_count(1, "hi"), "1 message matches “hi”");
+            assert_eq!(result_count(3, "hi"), "3 messages match “hi”");
+            assert_eq!(result_count(200, "hi"), "Newest 200 messages matching “hi”");
         }
     }
 }

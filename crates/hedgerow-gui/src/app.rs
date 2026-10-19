@@ -373,6 +373,8 @@ pub struct Ui {
     drag: Signal<Option<Drag>>,
     /// The view a search replaced, which clearing the search brings back.
     before_search: Signal<Option<View>>,
+    /// The view the settings replaced, which closing them brings back.
+    before_settings: Signal<Option<View>>,
 }
 
 impl Ui {
@@ -421,6 +423,7 @@ impl Ui {
             opened: Signal::new(None),
             drag: Signal::new(None),
             before_search: Signal::new(None),
+            before_settings: Signal::new(None),
         }
     }
 
@@ -664,6 +667,25 @@ impl Ui {
             (false, View::Search(_)) => view.set(before.take().unwrap_or(View::None)),
             (false, _) => {}
         }
+    }
+
+    /// Shows the settings at `tab`, remembering the view they replace.
+    pub fn open_settings(&self, tab: SettingsTab) {
+        let (mut view, mut before) = (self.view, self.before_settings);
+        let current = view.peek().clone();
+
+        if !matches!(current, View::Settings(_)) {
+            before.set(Some(current));
+        }
+
+        view.set(View::Settings(tab));
+    }
+
+    /// Leaves the settings for the view they replaced.
+    pub fn close_settings(&self) {
+        let (mut view, mut before) = (self.view, self.before_settings);
+
+        view.set(before.take().unwrap_or(View::None));
     }
 
     /// Starts a sidebar divider drag at pointer column `x`.

@@ -115,7 +115,7 @@ installer.
 3. Open Settings > Connection.
 4. Select the transport. For Bluetooth, type the device name or address,
    or click Scan and choose the radio.
-5. Click "Save and connect".
+5. Click Save. Hedgerow saves the settings and connects.
 
 The app connects again on its next start when "Connect automatically on
 start" is on. On macOS, use the Bluetooth device name, because macOS does

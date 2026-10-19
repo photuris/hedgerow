@@ -232,11 +232,11 @@ pub fn Chat(thread: ThreadId, node: Option<String>, secret: Option<[u8; 16]>) ->
 
     rsx! {
         div { class: "chat",
-            div { class: "chat-head",
-                div { class: "chat-head-text",
-                    div { class: "chat-title", "{title}" }
+            div { class: "pane-head",
+                div { class: "pane-head-text",
+                    div { class: "pane-title", "{title}" }
                     if let Some(detail) = detail {
-                        div { class: "chat-detail", "{detail}" }
+                        div { class: "pane-detail", "{detail}" }
                     }
                 }
                 button {
@@ -250,7 +250,7 @@ pub fn Chat(thread: ThreadId, node: Option<String>, secret: Option<[u8; 16]>) ->
             }
             div { id: "msgs", class: "msgs",
                 if items.is_empty() {
-                    div { class: "msgs-empty", "No messages yet" }
+                    div { class: "empty", "No messages yet" }
                 }
                 for (message , day) in items {
                     Bubble {

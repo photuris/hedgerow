@@ -5,6 +5,7 @@ use hedgerow_core::model::{NotifyMode, ThreadId, ThreadSummary};
 use hedgerow_core::session::ConnState;
 
 use super::Icon;
+use super::confirm::ContextMenu;
 use crate::app::{SettingsTab, Ui, View, keep_typing};
 use crate::format;
 
@@ -17,7 +18,7 @@ type MenuAt = (ThreadId, f64, f64, NotifyMode);
 pub fn Sidebar() -> Element {
     let ui = use_context::<Ui>();
     let mut menu = use_signal(|| None::<MenuAt>);
-    let mut view = ui.view;
+    let view = ui.view;
     let threads = use_memo({
         let ui = ui.clone();
 
@@ -84,7 +85,11 @@ pub fn Sidebar() -> Element {
                         button {
                             class: "link",
                             title: "Add a channel",
-                            onclick: move |_| view.set(View::Settings(SettingsTab::Channels)),
+                            onclick: {
+                                let ui = ui.clone();
+
+                                move |_| ui.open_settings(SettingsTab::Channels)
+                            },
                             "+"
                         }
                     }
@@ -95,7 +100,11 @@ pub fn Sidebar() -> Element {
                     div { class: "side-empty",
                         div { "Not connected yet" }
                         button {
-                            onclick: move |_| view.set(View::Settings(SettingsTab::Connection)),
+                            onclick: {
+                                let ui = ui.clone();
+
+                                move |_| ui.open_settings(SettingsTab::Connection)
+                            },
                             "Connection settings"
                         }
                     }
@@ -206,10 +215,7 @@ fn NavFooter() -> Element {
     rsx! {
         div { class: "side-foot",
             button { onclick: move |_| view.set(View::Contacts), "Contacts" }
-            button {
-                onclick: move |_| view.set(View::Settings(SettingsTab::Connection)),
-                "Settings"
-            }
+            button { onclick: move |_| ui.open_settings(SettingsTab::Connection), "Settings" }
         }
     }
 }
@@ -230,10 +236,16 @@ fn Row(
     let preview = summary.last_text.clone().unwrap_or_default();
     let (select_thread, menu_thread) = (summary.thread.clone(), summary.thread.clone());
     let notify = summary.notify;
+    let class = match (selected, summary.unread > 0) {
+        (true, true) => "row selected unread",
+        (true, false) => "row selected",
+        (false, true) => "row unread",
+        (false, false) => "row",
+    };
 
     rsx! {
         div {
-            class: if selected { "row selected" } else { "row" },
+            class,
             onclick: move |_| onselect.call(select_thread.clone()),
             oncontextmenu: move |evt| {
                 evt.prevent_default();
@@ -290,26 +302,7 @@ fn RowMenu(menu: Signal<Option<MenuAt>>) -> Element {
     };
 
     rsx! {
-        div {
-            class: "menu-backdrop",
-            onclick: move |_| menu.set(None),
-            oncontextmenu: move |evt| {
-                evt.prevent_default();
-                menu.set(None);
-            },
-        }
-        div {
-            class: "menu",
-            style: "left: {x}px; top: {y}px",
-            tabindex: "0",
-            onmounted: move |evt| async move {
-                let _ = evt.set_focus(true).await;
-            },
-            onkeydown: move |evt| {
-                if evt.key() == Key::Escape {
-                    menu.set(None);
-                }
-            },
+        ContextMenu { x, y, onclose: move |_| menu.set(None),
             button {
                 onclick: move |_| {
                     read_ui.mark_read(&read_thread);

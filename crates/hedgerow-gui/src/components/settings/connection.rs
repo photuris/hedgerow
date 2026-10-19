@@ -5,6 +5,7 @@ use hedgerow_core::config::Transport;
 use hedgerow_core::radio::Radio;
 use hedgerow_core::session::{Command, ConnState};
 
+use super::Draft;
 use crate::app::Ui;
 
 /// Baud rates offered for a serial port.
@@ -28,13 +29,16 @@ fn status_line(state: &ConnState) -> String {
     }
 }
 
-/// Transport, target, and auto-connect, saved with one button.
+/// Transport, target, and auto-connect, edited in the settings `draft`, and
+/// the buttons that connect and disconnect now. Connect uses the saved
+/// settings, so it waits while the draft has changes (`dirty`).
 #[component]
-pub fn Connection() -> Element {
+pub fn Connection(draft: Draft, dirty: bool) -> Element {
     let ui = use_context::<Ui>();
-    let initial = (ui.config).peek().connection.clone();
-    let mut draft = use_signal(|| initial.clone());
-    let mut port_text = use_signal(|| initial.tcp_port.to_string());
+    let Draft {
+        mut config,
+        mut port_text,
+    } = draft;
     let mut found = use_signal(Vec::<String>::new);
     let mut scanning = use_signal(|| false);
     let mut ports = use_signal(|| {
@@ -45,11 +49,15 @@ pub fn Connection() -> Element {
             Radio::serial_ports()
         }
     });
-    let mut error = use_signal(|| None::<String>);
     let state = (ui.state)();
-    let cfg = draft();
+    let cfg = config().connection;
     let scan_title = ui.ui_test.then_some(UI_TEST_TITLE);
-    let can_disconnect = matches!(state, ConnState::Connected(_) | ConnState::Connecting);
+    let busy = matches!(state, ConnState::Connected(_) | ConnState::Connecting);
+    let connect_title = if dirty {
+        Some("Save the changes first")
+    } else {
+        busy.then_some("Already connected")
+    };
     let scan = {
         let ui = ui.clone();
 
@@ -64,49 +72,12 @@ pub fn Connection() -> Element {
 
                 match result {
                     Ok(Ok(names)) => found.set(names),
-                    Ok(Err(e)) => ui.show_toast(format!("Scan failed: {e}")),
-                    Err(e) => ui.show_toast(format!("Scan failed: {e}")),
+                    Ok(Err(e)) => ui.show_toast(format!("Scan: {e}")),
+                    Err(e) => ui.show_toast(format!("Scan: {e}")),
                 }
 
                 scanning.set(false);
             });
-        }
-    };
-    let save = {
-        let ui = ui.clone();
-
-        move |_| {
-            let mut connection = draft();
-
-            // The port field is only on screen for TCP; for the other
-            // transports the last valid port stays in the config.
-            if connection.transport == Transport::Tcp {
-                let Ok(port) = port_text().trim().parse::<u16>() else {
-                    error.set(Some("The TCP port must be a number from 0 to 65535".into()));
-
-                    return;
-                };
-
-                connection.tcp_port = port;
-            }
-
-            let mut config = (ui.config).peek().clone();
-            let mut stored = ui.config;
-
-            config.connection = connection.clone();
-
-            // UI-test mode never writes the user's files.
-            if !ui.ui_test
-                && let Err(e) = config.save()
-            {
-                error.set(Some(format!("Could not save the settings: {e}")));
-
-                return;
-            }
-
-            error.set(None);
-            stored.set(config);
-            ui.session.send(Command::Reconfigure(connection));
         }
     };
 
@@ -123,7 +94,7 @@ pub fn Connection() -> Element {
                         r#type: "radio",
                         name: "transport",
                         checked: cfg.transport == transport,
-                        onchange: move |_| draft.write().transport = transport,
+                        onchange: move |_| config.write().connection.transport = transport,
                     }
                     "{label}"
                 }
@@ -137,7 +108,7 @@ pub fn Connection() -> Element {
                         id: "ble-device",
                         r#type: "text",
                         value: "{cfg.ble_device}",
-                        oninput: move |evt| draft.write().ble_device = evt.value(),
+                        oninput: move |evt| config.write().connection.ble_device = evt.value(),
                     }
                     button { disabled: ui.ui_test || scanning(), title: scan_title, onclick: scan, "Scan" }
                 }
@@ -152,7 +123,7 @@ pub fn Connection() -> Element {
                             onclick: {
                                 let name = name.clone();
 
-                                move |_| draft.write().ble_device = name.clone()
+                                move |_| config.write().connection.ble_device = name.clone()
                             },
                             "{name}"
                         }
@@ -165,7 +136,7 @@ pub fn Connection() -> Element {
                     select {
                         id: "serial-port",
                         value: "{cfg.serial_port}",
-                        onchange: move |evt| draft.write().serial_port = evt.value(),
+                        onchange: move |evt| config.write().connection.serial_port = evt.value(),
                         option { value: "", "Choose a port…" }
                         for port in ports() {
                             option { key: "{port}", value: "{port}", selected: port == cfg.serial_port, "{port}" }
@@ -185,7 +156,7 @@ pub fn Connection() -> Element {
                         r#type: "text",
                         placeholder: "/dev/ttyACM0",
                         value: "{cfg.serial_port}",
-                        oninput: move |evt| draft.write().serial_port = evt.value(),
+                        oninput: move |evt| config.write().connection.serial_port = evt.value(),
                     }
                 }
                 div { class: "setting-row",
@@ -195,7 +166,7 @@ pub fn Connection() -> Element {
                         value: "{cfg.baud}",
                         onchange: move |evt| {
                             if let Ok(baud) = evt.value().parse() {
-                                draft.write().baud = baud;
+                                config.write().connection.baud = baud;
                             }
                         },
                         for baud in BAUDS {
@@ -211,7 +182,7 @@ pub fn Connection() -> Element {
                         id: "tcp-host",
                         r#type: "text",
                         value: "{cfg.tcp_host}",
-                        oninput: move |evt| draft.write().tcp_host = evt.value(),
+                        oninput: move |evt| config.write().connection.tcp_host = evt.value(),
                     }
                 }
                 div { class: "setting-row",
@@ -231,15 +202,24 @@ pub fn Connection() -> Element {
                 input {
                     r#type: "checkbox",
                     checked: cfg.auto_connect,
-                    onchange: move |evt| draft.write().auto_connect = evt.checked(),
+                    onchange: move |evt| config.write().connection.auto_connect = evt.checked(),
                 }
                 "Connect automatically on start"
             }
         }
         div { class: "setting-actions",
-            button { class: "primary", onclick: save, "Save and connect" }
             button {
-                disabled: !can_disconnect,
+                disabled: dirty || busy,
+                title: connect_title,
+                onclick: {
+                    let session = ui.session.clone();
+
+                    move |_| session.send(Command::Connect)
+                },
+                "Connect"
+            }
+            button {
+                disabled: !busy,
                 onclick: {
                     let session = ui.session.clone();
 
@@ -247,9 +227,6 @@ pub fn Connection() -> Element {
                 },
                 "Disconnect"
             }
-        }
-        if let Some(e) = error() {
-            div { class: "error", "{e}" }
         }
         div { class: "status-line", "{status_line(&state)}" }
     }

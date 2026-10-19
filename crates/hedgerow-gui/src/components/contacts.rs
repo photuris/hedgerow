@@ -28,6 +28,15 @@ fn needs_connection(connected: bool) -> Option<&'static str> {
     }
 }
 
+/// The header's detail line: how many contacts the filters leave of `total`.
+fn contact_count(shown: usize, total: usize) -> String {
+    match (shown, total) {
+        (_, 1) if shown == total => "1 contact".to_string(),
+        (s, t) if s == t => format!("{t} contacts"),
+        (s, t) => format!("{s} of {t} contacts"),
+    }
+}
+
 /// Keeps the contacts of `kind` (any kind for `None`) whose name contains
 /// `query`, ignoring case, or whose public key starts with it.
 fn filter_contacts(contacts: &[Contact], query: &str, kind: Option<ContactKind>) -> Vec<Contact> {
@@ -88,6 +97,12 @@ pub fn Contacts() -> Element {
 
     rsx! {
         div { class: "contacts",
+            div { class: "pane-head",
+                div { class: "pane-head-text",
+                    div { class: "pane-title", "Contacts" }
+                    div { class: "pane-detail", "{contact_count(visible.len(), all.len())}" }
+                }
+            }
             div { class: "toolbar",
                 input {
                     r#type: "text",
@@ -147,10 +162,18 @@ pub fn Contacts() -> Element {
                     "Refresh"
                 }
             }
-            div { class: "contact-list",
+            div { class: "scroll",
                 if visible.is_empty() {
-                    div { class: "msgs-empty",
+                    div { class: "empty",
                         if all.is_empty() { "No contacts yet" } else { "No contacts match" }
+                    }
+                } else {
+                    div { class: "table-head",
+                        div { class: "col-kind", "Kind" }
+                        div { class: "cell-name", "Name" }
+                        div { class: "col-key", "Key" }
+                        div { class: "col-path num", "Path" }
+                        div { class: "col-heard num", "Heard" }
                     }
                 }
                 for contact in visible {
@@ -229,13 +252,13 @@ fn ContactRow(
     let removed = contact.clone();
 
     rsx! {
-        div { class: "contact-row",
-            div { class: "contact-kind", "{contact.kind.label()}" }
-            div { class: "contact-name", "{contact.name}" }
-            div { class: "contact-key", "{prefix}" }
-            div { class: "contact-path", "{format::path_label(contact.path_len)}" }
-            div { class: "contact-heard", "{heard}" }
-            div { class: "contact-actions",
+        div { class: "table-row",
+            div { class: "col-kind cell-muted", "{contact.kind.label()}" }
+            div { class: "cell-name", "{contact.name}" }
+            div { class: "col-key cell-key cell-muted", "{prefix}" }
+            div { class: "col-path num cell-muted", "{format::path_label(contact.path_len)}" }
+            div { class: "col-heard num cell-muted", "{heard}" }
+            div { class: "cell-actions",
                 button {
                     onclick: {
                         let thread = ThreadId::Contact(prefix.clone());
@@ -353,6 +376,13 @@ pub fn ExportDialog() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_count_says_how_many_the_filters_leave() {
+        assert_eq!(contact_count(1, 1), "1 contact");
+        assert_eq!(contact_count(4, 4), "4 contacts");
+        assert_eq!(contact_count(2, 4), "2 of 4 contacts");
+    }
 
     /// A contact whose key is `fill` followed by 63 `1`s.
     fn contact(name: &str, fill: char, kind: ContactKind) -> Contact {

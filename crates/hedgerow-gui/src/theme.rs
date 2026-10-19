@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 /// How long to collect a burst of file events before re-reading the theme.
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// The prefix of the CSS custom properties the theme sets: `--rk-accent`.
+const CSS_PREFIX: &str = "rk";
+
 /// Colour scheme read from an Omarchy `colors.toml`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Theme {
@@ -53,14 +56,46 @@ pub fn detect_at(path: &Path) -> Option<Theme> {
     Some(theme)
 }
 
-/// CSS custom properties for `t`, one `--rk-<key>` per colour.
+/// CSS custom properties for `t`, one `--<CSS_PREFIX>-<key>` per colour,
+/// plus `--<CSS_PREFIX>-on-accent` (black or white, whichever reads on the
+/// accent) when the theme has an `accent`.
 pub fn css_vars(t: &Theme) -> String {
     let mut css = format!(":root{{color-scheme:{};", t.mode);
     for (key, value) in &t.colors {
-        css.push_str(&format!("--rk-{}:{value};", key.replace('_', "-")));
+        css.push_str(&format!(
+            "--{CSS_PREFIX}-{}:{value};",
+            key.replace('_', "-")
+        ));
+    }
+    if let Some(on) = t.colors.get("accent").and_then(|hex| on_color(hex)) {
+        css.push_str(&format!("--{CSS_PREFIX}-on-accent:{on};"));
     }
     css.push('}');
     css
+}
+
+/// `#000000` or `#ffffff`, whichever contrasts more with `hex` (`#rrggbb`);
+/// `None` when `hex` is not that shape. Uses the WCAG relative luminance
+/// with the 0.179 crossover, where black and white contrast equally.
+fn on_color(hex: &str) -> Option<&'static str> {
+    let hex = hex.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let channel = |i: usize| -> Option<f64> {
+        let c = f64::from(u8::from_str_radix(&hex[i..i + 2], 16).ok()?) / 255.0;
+        Some(if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        })
+    };
+    let luminance = 0.2126 * channel(0)? + 0.7152 * channel(2)? + 0.0722 * channel(4)?;
+    Some(if luminance > 0.179 {
+        "#000000"
+    } else {
+        "#ffffff"
+    })
 }
 
 /// Watches the current Omarchy theme; see [`watch_at`].
@@ -242,7 +277,21 @@ mod tests {
         assert!(css.contains("color-scheme:dark;"), "{css}");
         assert!(css.contains("--rk-accent:#CC785C;"), "{css}");
         assert!(css.contains("--rk-dark-background:#141311;"), "{css}");
+        assert!(css.contains("--rk-on-accent:#000000;"), "{css}");
         assert!(css.ends_with('}'), "{css}");
+    }
+
+    #[test]
+    fn on_color_picks_black_for_light_accents() {
+        // Terracotta reads better with black by WCAG (6.4:1 against 3.3:1).
+        assert_eq!(on_color("#CC785C"), Some("#000000"));
+        assert_eq!(on_color("#1e66f5"), Some("#ffffff"));
+        assert_eq!(on_color("#f9e2af"), Some("#000000"));
+        assert_eq!(on_color("#000000"), Some("#ffffff"));
+        assert_eq!(on_color("#ffffff"), Some("#000000"));
+        assert_eq!(on_color("CC785C"), None);
+        assert_eq!(on_color("#fff"), None);
+        assert_eq!(on_color("#zzzzzz"), None);
     }
 
     #[test]
