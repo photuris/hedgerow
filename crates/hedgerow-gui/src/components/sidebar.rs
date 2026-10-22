@@ -9,15 +9,16 @@ use super::confirm::ContextMenu;
 use crate::app::{SettingsTab, Ui, View, keep_typing};
 use crate::format;
 
-/// Where, for which thread, and with which notification mode the row menu is
-/// open.
-type MenuAt = (ThreadId, f64, f64, NotifyMode);
+/// Where, for which thread, with which notification mode, and whether that
+/// thread is archived, the row menu is open.
+type MenuAt = (ThreadId, f64, f64, NotifyMode, bool);
 
 /// The left column.
 #[component]
 pub fn Sidebar() -> Element {
     let ui = use_context::<Ui>();
     let mut menu = use_signal(|| None::<MenuAt>);
+    let mut show_archived = use_signal(|| false);
     let view = ui.view;
     let threads = use_memo({
         let ui = ui.clone();
@@ -61,8 +62,16 @@ pub fn Sidebar() -> Element {
             }
         }
     };
+    let (archived, direct): (Vec<_>, Vec<_>) = direct.into_iter().partition(|t| t.archived);
+    let archived_count = archived.len();
     let channel_rows = channels.into_iter().map(row);
     let direct_rows = direct.into_iter().map(row);
+    let archived_rows = archived.into_iter().map(row);
+    let archived_label = if show_archived() {
+        format!("Hide archived ({archived_count})")
+    } else {
+        format!("Show archived ({archived_count})")
+    };
     let has_node = (ui.node)().is_some();
 
     rsx! {
@@ -96,6 +105,18 @@ pub fn Sidebar() -> Element {
                     {channel_rows}
                     div { class: "group-head", "Direct messages" }
                     {direct_rows}
+                    if archived_count > 0 {
+                        div { class: "group-head",
+                            button {
+                                class: "link",
+                                onclick: move |_| show_archived.toggle(),
+                                "{archived_label}"
+                            }
+                        }
+                        if show_archived() {
+                            {archived_rows}
+                        }
+                    }
                 } else {
                     div { class: "side-empty",
                         div { "Not connected yet" }
@@ -235,7 +256,7 @@ fn Row(
         .unwrap_or_default();
     let preview = summary.last_text.clone().unwrap_or_default();
     let (select_thread, menu_thread) = (summary.thread.clone(), summary.thread.clone());
-    let notify = summary.notify;
+    let (notify, archived) = (summary.notify, summary.archived);
     let class = match (selected, summary.unread > 0) {
         (true, true) => "row selected unread",
         (true, false) => "row selected",
@@ -252,7 +273,7 @@ fn Row(
 
                 let at = evt.client_coordinates();
 
-                onmenu.call((menu_thread.clone(), at.x, at.y, notify));
+                onmenu.call((menu_thread.clone(), at.x, at.y, notify, archived));
             },
             div { class: "row-top",
                 div { class: "row-title",
@@ -281,7 +302,7 @@ fn Row(
 fn RowMenu(menu: Signal<Option<MenuAt>>) -> Element {
     let ui = use_context::<Ui>();
     let mut menu = menu;
-    let Some((thread, x, y, current)) = menu() else {
+    let Some((thread, x, y, current, archived)) = menu() else {
         return rsx! {};
     };
     let (read_thread, unread_thread) = (thread.clone(), thread.clone());
@@ -343,13 +364,23 @@ fn RowMenu(menu: Signal<Option<MenuAt>>) -> Element {
             }
             if let Some(thread) = archive_thread {
                 div { class: "menu-sep" }
-                button {
-                    title: "Hide until the next message; the history stays",
-                    onclick: move |_| {
-                        archive_ui.archive(&thread);
-                        menu.set(None);
-                    },
-                    "Archive"
+                if archived {
+                    button {
+                        onclick: move |_| {
+                            archive_ui.unarchive(&thread);
+                            menu.set(None);
+                        },
+                        "Unarchive"
+                    }
+                } else {
+                    button {
+                        title: "Hide until the next message; the history stays",
+                        onclick: move |_| {
+                            archive_ui.archive(&thread);
+                            menu.set(None);
+                        },
+                        "Archive"
+                    }
                 }
             }
         }

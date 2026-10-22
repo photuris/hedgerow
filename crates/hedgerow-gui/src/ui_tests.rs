@@ -2358,6 +2358,28 @@ async fn archive_from_the_row_menu_hides_the_dm_until_it_hears_again() {
 }
 
 #[tokio::test]
+async fn unarchive_from_the_archived_group_lists_the_dm_again() {
+    let (mut dom, _ui, _fake) = setup("contacts").await;
+
+    open_row_menu(&mut dom, "Alice").await;
+    click(&dom, &button(&dom, "Archive", false));
+    settle(&mut dom).await;
+    click(&dom, &button(&dom, "Show archived (1)", false));
+    settle(&mut dom).await;
+    open_row_menu(&mut dom, "Alice").await;
+    click(&dom, &button(&dom, "Unarchive", false));
+    settle(&mut dom).await;
+
+    row_titled(&dom, "Alice");
+    assert!(
+        !els(&dom)
+            .iter()
+            .any(|e| e.text.starts_with("Hide archived")),
+        "the archived group is gone once it is empty"
+    );
+}
+
+#[tokio::test]
 async fn row_menu_offers_no_archive_for_a_channel() {
     let (mut dom, ui, _fake) = setup("contacts").await;
     let node = device(&ui).node_id;

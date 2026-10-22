@@ -19,9 +19,10 @@ servers, repeater administration, and telemetry are not in it yet.
 - Marks a thread read when you open it. Right-click a thread to mark it
   read or unread, or use "Mark all read".
 - Archives a direct-message thread: right-click it and choose Archive. The
-  thread leaves the sidebar and its messages are marked read. The history
-  stays: Contacts → Message and search still open it, and the next message
-  in either direction brings it back.
+  thread moves into a collapsed "Show archived (n)" group under the direct
+  messages, and its messages are marked read. The history stays. Right-click
+  an archived thread and choose Unarchive to put it back; the next message
+  in either direction also brings it back.
 - Keeps every message in a local SQLite database, so history survives
   restarts and works offline.
 - Searches messages. Type two or more characters in the box at the top of

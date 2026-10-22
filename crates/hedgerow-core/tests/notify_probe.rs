@@ -723,7 +723,7 @@ fn probe_store_migrates_a_version_1_file() {
     let store = Store::open(&path).unwrap();
     assert_eq!(store.notify_mode(NODE, &dm).unwrap(), NotifyMode::Mute);
     store.archive(NODE, &dm).unwrap();
-    assert!(store.threads(NODE).unwrap().is_empty());
+    assert!(store.threads(NODE).unwrap()[0].archived);
 }
 
 #[test]

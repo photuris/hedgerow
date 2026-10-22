@@ -240,6 +240,9 @@ pub struct ThreadSummary {
     pub unread: u32,
     /// When this conversation raises a desktop notification.
     pub notify: NotifyMode,
+    /// Whether the conversation is archived: a direct thread with no message
+    /// since it was archived. Always `false` for a channel.
+    pub archived: bool,
 }
 
 /// When a conversation raises a desktop notification.

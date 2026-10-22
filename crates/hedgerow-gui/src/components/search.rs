@@ -136,6 +136,7 @@ mod tests {
             last_at: None,
             unread: 0,
             notify: NotifyMode::Default,
+            archived: false,
         }
     }
 

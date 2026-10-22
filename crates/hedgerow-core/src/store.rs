@@ -513,7 +513,8 @@ impl Store {
     // ── Threads and read state ──────────────────────────────────────────────
 
     /// Lists conversations: every stored channel by slot, then contact
-    /// threads with a message newer than their archive marker, newest first.
+    /// threads with messages, newest first. A contact thread with no message
+    /// after its archive marker is flagged [`ThreadSummary::archived`].
     ///
     /// # Errors
     ///
@@ -534,26 +535,30 @@ impl Store {
         }
 
         let mut stmt = conn.prepare(
-            "SELECT thread_key FROM messages m WHERE node_id = ?1 AND thread_kind = 'contact' \
-             GROUP BY thread_key HAVING max(id) > coalesce((SELECT archived_id FROM thread_state \
-             WHERE node_id = ?1 AND thread_kind = 'contact' AND thread_key = m.thread_key), 0)",
+            "SELECT thread_key, max(id) <= coalesce((SELECT archived_id FROM thread_state \
+             WHERE node_id = ?1 AND thread_kind = 'contact' AND thread_key = m.thread_key), 0) \
+             FROM messages m WHERE node_id = ?1 AND thread_kind = 'contact' GROUP BY thread_key",
         )?;
-        let keys: Vec<String> = stmt
-            .query_map(params![node], |r| r.get(0))?
+        let keys: Vec<(String, bool)> = stmt
+            .query_map(params![node], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
         let mut contact_threads = Vec::new();
 
-        for key in keys {
+        for (key, archived) in keys {
             let title = contact_name(&conn, node, &key)?.unwrap_or_else(|| key.clone());
-
-            contact_threads.push(summarize(
+            let summary = summarize(
                 &conn,
                 node,
                 ThreadId::Contact(key.clone()),
                 "contact",
                 &key,
                 title,
-            )?);
+            )?;
+
+            contact_threads.push(ThreadSummary {
+                archived,
+                ..summary
+            });
         }
 
         contact_threads.sort_by(|a, b| {
@@ -617,9 +622,9 @@ impl Store {
         Ok(())
     }
 
-    /// Takes contact `thread` off [`Store::threads`] and marks it read. Its
-    /// history stays, and the next message in either direction lists it
-    /// again. A channel is always listed, so archiving one has no effect.
+    /// Archives contact `thread` and marks it read. Its history stays, and
+    /// the next message in either direction unarchives it. A channel is
+    /// never archived, so archiving one has no visible effect.
     ///
     /// # Errors
     ///
@@ -640,6 +645,24 @@ impl Store {
              ON CONFLICT(node_id, thread_kind, thread_key) \
              DO UPDATE SET last_read_id = excluded.last_read_id, archived_id = excluded.archived_id",
             params![node, kind, key, newest],
+        )?;
+
+        Ok(())
+    }
+
+    /// Unarchives `thread`, keeping its read marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] on SQLite failure.
+    pub fn unarchive(&self, node: &str, thread: &ThreadId) -> Result<()> {
+        let conn = self.lock();
+        let (kind, key) = thread_key(&conn, node, thread)?;
+
+        conn.execute(
+            "UPDATE thread_state SET archived_id = 0 \
+             WHERE node_id = ?1 AND thread_kind = ?2 AND thread_key = ?3",
+            params![node, kind, key],
         )?;
 
         Ok(())
@@ -1057,6 +1080,7 @@ fn summarize(
         last_at,
         unread,
         notify: read_notify(conn, node, kind, key)?,
+        archived: false,
     })
 }
 
@@ -1402,11 +1426,12 @@ mod tests {
             }
         }
 
-        /// The threads listed for `NODE`.
+        /// The threads of `NODE` that are not archived.
         fn listed(s: &Store) -> Vec<ThreadId> {
             s.threads(NODE)
                 .unwrap()
                 .into_iter()
+                .filter(|t| !t.archived)
                 .map(|t| t.thread)
                 .collect()
         }
@@ -1432,6 +1457,35 @@ mod tests {
             s.insert_message(NODE, &from_alice("again", 2)).unwrap();
 
             assert_eq!(listed(&s), [alice()]);
+        }
+
+        #[test]
+        fn should_still_list_the_thread_flagged_archived() {
+            let s = Store::open_memory().unwrap();
+
+            s.insert_message(NODE, &from_alice("hello", 1)).unwrap();
+            s.archive(NODE, &alice()).unwrap();
+
+            let archived: Vec<bool> = s
+                .threads(NODE)
+                .unwrap()
+                .iter()
+                .map(|t| t.archived)
+                .collect();
+
+            assert_eq!(archived, [true]);
+        }
+
+        #[test]
+        fn should_list_the_thread_again_when_unarchived_and_keep_it_read() {
+            let s = Store::open_memory().unwrap();
+
+            s.insert_message(NODE, &from_alice("hello", 1)).unwrap();
+            s.archive(NODE, &alice()).unwrap();
+            s.unarchive(NODE, &alice()).unwrap();
+
+            assert_eq!(listed(&s), [alice()]);
+            assert_eq!(s.unread_total(NODE).unwrap(), 0);
         }
 
         #[test]

@@ -834,6 +834,19 @@ impl Ui {
         self.bump();
     }
 
+    /// Puts archived direct conversation `thread` back on the sidebar.
+    pub fn unarchive(&self, thread: &ThreadId) {
+        let Some(node) = self.node.peek().clone() else {
+            return;
+        };
+
+        if let Err(e) = self.store.unarchive(&node, thread) {
+            self.report("Could not unarchive", &e);
+        }
+
+        self.bump();
+    }
+
     /// Marks every conversation read.
     pub fn mark_all_read(&self) {
         let Some(node) = self.node.peek().clone() else {
