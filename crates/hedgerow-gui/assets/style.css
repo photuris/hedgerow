@@ -91,6 +91,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
    has no column and no divider. */
 .panes { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
 .panes.dragging { cursor: col-resize; user-select: none; }
+/* The resizer draws the only line between panes; panes carry no side border. */
 .resizer {
   cursor: col-resize;
   background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat;
@@ -109,7 +110,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
   min-width: 0; min-height: 0;
   display: flex; flex-direction: column;
   background: var(--rk-dark-background);
-  border-right: 1px solid var(--border);
 }
 .side-head { gap: 4px; }
 .side-head input { flex: 1; min-width: 0; }
@@ -150,8 +150,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 
 main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--rk-muted); }
-.pane-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+/* Same 44px as .side-head, so the two hairlines line up across the panes. */
+.pane-head { flex: none; display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 16px; border-bottom: 1px solid var(--border); }
 .pane-head-text { flex: 1; min-width: 0; }
+.pane-head-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pane-title { font-weight: 600; font-size: 16px; }
 .pane-detail { font-size: 12px; color: var(--rk-muted); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
