@@ -29,9 +29,14 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// and 20 slots over BLE need more than [`COMMAND_TIMEOUT`].
 const CHANNELS_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Requests for one channel slot before replies for other slots count as a
-/// failed read.
+/// Requests for one channel slot before a lost reply, or replies for other
+/// slots, count as a failed read.
 const SLOT_ATTEMPTS: usize = 3;
+
+/// How long one channel slot read may take before it is asked again. A
+/// reply normally takes well under a second; a lost BLE notification never
+/// arrives. Three tries fit inside [`CHANNELS_TIMEOUT`].
+const SLOT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the full contact list may take to arrive.
 const CONTACTS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -447,6 +452,12 @@ async fn within<T>(
 /// (a repeated BLE notification, a late answer) shifts every later reply by
 /// one slot. A reply for another slot is dropped and the slot asked again,
 /// up to [`SLOT_ATTEMPTS`] times.
+///
+/// A reply can also never come (a dropped notification). A slot whose read
+/// times out or fails on the link is asked again under the same
+/// [`SLOT_ATTEMPTS`] limit, each try within [`SLOT_TIMEOUT`]. A rejection
+/// is returned at once: the device answered. An unread slot is never
+/// reported as empty, since the slot map decides where channels get written.
 async fn read_channels<F, Fut>(max: u8, mut send: F) -> Result<Vec<Channel>>
 where
     F: FnMut(Vec<u8>) -> Fut,
@@ -458,7 +469,18 @@ where
         for idx in 0..max {
             let mut attempt = 1;
             let info = loop {
-                let event = send(vec![CMD_GET_CHANNEL, idx]).await?;
+                let slot = format!("channel {idx}");
+                let event = match within(&slot, SLOT_TIMEOUT, send(vec![CMD_GET_CHANNEL, idx]))
+                    .await
+                {
+                    Ok(event) => event,
+                    Err(Error::Radio(e)) if attempt < SLOT_ATTEMPTS => {
+                        tracing::warn!(slot = idx, error = %e, "channel read failed, asking again");
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
 
                 let EventPayload::ChannelInfo(info) = event.payload else {
                     return Err(Error::Radio(format!("unexpected reply for channel {idx}")));
@@ -1003,6 +1025,91 @@ mod tests {
                 matches!(&result, Err(Error::Radio(m)) if m == "channel 0: replies kept naming slot 7"),
                 "result was {result:?}"
             );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn should_ask_a_slot_again_when_its_reply_is_lost() {
+            let started = tokio::time::Instant::now();
+            let mut lost = false;
+            let result = read_channels(4, |frame| {
+                let idx = frame[1];
+                let lose = idx == 2 && !lost;
+
+                lost |= lose;
+
+                async move {
+                    if lose {
+                        std::future::pending::<()>().await;
+                    }
+
+                    Ok(reply(idx))
+                }
+            })
+            .await
+            .unwrap();
+            let slots: Vec<_> = result.iter().map(|c| c.idx).collect();
+
+            assert_eq!(slots, [0, 1, 2, 3]);
+            assert_eq!(started.elapsed(), SLOT_TIMEOUT);
+        }
+
+        #[tokio::test]
+        async fn should_ask_a_slot_again_when_the_link_reports_a_timeout() {
+            // What the library returns when its own wait for a reply expires.
+            let mut failed = false;
+            let result = read_channels(3, |frame| {
+                let idx = frame[1];
+                let fail = idx == 1 && !failed;
+
+                failed |= fail;
+
+                async move {
+                    if fail {
+                        return Err(Error::Radio("Timeout waiting for response".into()));
+                    }
+
+                    Ok(reply(idx))
+                }
+            })
+            .await;
+
+            assert_eq!(result.map(|found| found.len()).ok(), Some(3));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn should_fail_naming_the_slot_when_it_never_answers() {
+            let started = tokio::time::Instant::now();
+            let result = read_channels(4, |frame| async move {
+                if frame[1] == 1 {
+                    std::future::pending::<()>().await;
+                }
+
+                Ok(reply(frame[1]))
+            })
+            .await;
+
+            assert!(
+                matches!(&result, Err(Error::Radio(m)) if m == "timed out: channel 1"),
+                "result was {result:?}"
+            );
+            assert_eq!(started.elapsed(), SLOT_TIMEOUT * SLOT_ATTEMPTS as u32);
+        }
+
+        #[tokio::test]
+        async fn should_not_ask_again_when_the_device_rejects_a_slot() {
+            let mut asked = 0;
+            let result = read_channels(4, |_| {
+                asked += 1;
+
+                async { Err(Error::Rejected("bad index".into())) }
+            })
+            .await;
+
+            assert!(
+                matches!(result, Err(Error::Rejected(_))),
+                "result was {result:?}"
+            );
+            assert_eq!(asked, 1);
         }
 
         #[tokio::test(start_paused = true)]
