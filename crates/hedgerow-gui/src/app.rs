@@ -813,6 +813,27 @@ impl Ui {
         self.bump();
     }
 
+    /// Takes direct conversation `thread` off the sidebar until its next
+    /// message. When it is the open thread the selection is cleared.
+    pub fn archive(&self, thread: &ThreadId) {
+        let Some(node) = self.node.peek().clone() else {
+            return;
+        };
+
+        if let Err(e) = self.store.archive(&node, thread) {
+            self.report("Could not archive", &e);
+        }
+
+        if *self.view.peek() == View::Thread(thread.clone()) {
+            let (mut view, mut opened) = (self.view, self.opened);
+
+            view.set(View::None);
+            opened.set(None);
+        }
+
+        self.bump();
+    }
+
     /// Marks every conversation read.
     pub fn mark_all_read(&self) {
         let Some(node) = self.node.peek().clone() else {

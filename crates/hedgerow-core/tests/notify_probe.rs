@@ -716,12 +716,14 @@ fn probe_store_migrates_a_version_1_file() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(version, "2");
+    assert_eq!(version, "3");
     drop(conn);
 
-    // Reopening a version 2 file works and keeps the mode.
+    // Reopening a version 3 file works, keeps the mode, and can archive.
     let store = Store::open(&path).unwrap();
     assert_eq!(store.notify_mode(NODE, &dm).unwrap(), NotifyMode::Mute);
+    store.archive(NODE, &dm).unwrap();
+    assert!(store.threads(NODE).unwrap().is_empty());
 }
 
 #[test]

@@ -285,7 +285,11 @@ fn RowMenu(menu: Signal<Option<MenuAt>>) -> Element {
         return rsx! {};
     };
     let (read_thread, unread_thread) = (thread.clone(), thread.clone());
-    let read_ui = ui.clone();
+    let (read_ui, archive_ui) = (ui.clone(), ui.clone());
+    let archive_thread = match &thread {
+        ThreadId::Contact(_) => Some(thread.clone()),
+        ThreadId::Channel(_) => None,
+    };
     let modes: &[(&str, NotifyMode)] = match thread {
         ThreadId::Channel(_) => &[
             ("Mentions only", NotifyMode::Default),
@@ -335,6 +339,17 @@ fn RowMenu(menu: Signal<Option<MenuAt>>) -> Element {
                     } else {
                         "{label}"
                     }
+                }
+            }
+            if let Some(thread) = archive_thread {
+                div { class: "menu-sep" }
+                button {
+                    title: "Hide until the next message; the history stays",
+                    onclick: move |_| {
+                        archive_ui.archive(&thread);
+                        menu.set(None);
+                    },
+                    "Archive"
                 }
             }
         }

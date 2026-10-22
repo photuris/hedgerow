@@ -18,6 +18,10 @@ servers, repeater administration, and telemetry are not in it yet.
   messages (pending, sent, delivered, failed), and Retry for failed sends.
 - Marks a thread read when you open it. Right-click a thread to mark it
   read or unread, or use "Mark all read".
+- Archives a direct-message thread: right-click it and choose Archive. The
+  thread leaves the sidebar and its messages are marked read. The history
+  stays: Contacts → Message and search still open it, and the next message
+  in either direction brings it back.
 - Keeps every message in a local SQLite database, so history survives
   restarts and works offline.
 - Searches messages. Type two or more characters in the box at the top of

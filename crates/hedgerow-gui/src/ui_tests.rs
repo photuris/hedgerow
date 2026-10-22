@@ -2338,6 +2338,48 @@ async fn muted_from_the_row_menu_stays_silent() {
 }
 
 #[tokio::test]
+async fn archive_from_the_row_menu_hides_the_dm_until_it_hears_again() {
+    let (mut dom, ui, fake) = setup("contacts").await;
+
+    open_row_menu(&mut dom, "Alice").await;
+    click(&dom, &button(&dom, "Archive", false));
+    settle(&mut dom).await;
+
+    assert!(
+        !els(&dom)
+            .iter()
+            .any(|e| e.has_class("row") && e.text.starts_with("Alice")),
+        "the archived row is gone"
+    );
+
+    push_and_wait(&mut dom, &ui, &fake, alice(), "pingecho").await;
+
+    row_titled(&dom, "Alice");
+}
+
+#[tokio::test]
+async fn row_menu_offers_no_archive_for_a_channel() {
+    let (mut dom, ui, _fake) = setup("contacts").await;
+    let node = device(&ui).node_id;
+    let title = ui
+        .store
+        .threads(&node)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.thread == ThreadId::Channel(0))
+        .unwrap()
+        .title;
+
+    open_row_menu(&mut dom, &title).await;
+    button(&dom, "Mark as read", false);
+
+    assert!(
+        !els(&dom).iter().any(|e| e.text == "Archive"),
+        "a channel row menu has no Archive"
+    );
+}
+
+#[tokio::test]
 async fn row_menu_marks_the_current_mode() {
     let (mut dom, ui, _fake) = setup("contacts").await;
     let node = device(&ui).node_id;

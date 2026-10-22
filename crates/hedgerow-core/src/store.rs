@@ -26,7 +26,7 @@ use crate::model::{
 use crate::text;
 
 /// Version of the table layout below; stored in `meta` as `schema_version`.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// Prefix of the fallback thread key for a slot with no stored channel.
 const SLOT_KEY_PREFIX: &str = "idx:";
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS channels(node_id TEXT NOT NULL, idx INTEGER NOT NULL,
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT NOT NULL, thread_kind TEXT NOT NULL, thread_key TEXT NOT NULL, direction TEXT NOT NULL, sender TEXT, text TEXT NOT NULL, sender_ts INTEGER NOT NULL, received_at INTEGER NOT NULL, path_len INTEGER, snr REAL, status TEXT NOT NULL, ack_tag BLOB);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_dedup ON messages(node_id, thread_kind, thread_key, direction, sender_ts, ifnull(sender, ''), text);
 CREATE INDEX IF NOT EXISTS messages_ack ON messages(node_id, ack_tag);
-CREATE TABLE IF NOT EXISTS thread_state(node_id TEXT NOT NULL, thread_kind TEXT NOT NULL, thread_key TEXT NOT NULL, last_read_id INTEGER NOT NULL DEFAULT 0, notify TEXT NOT NULL DEFAULT 'default', PRIMARY KEY(node_id, thread_kind, thread_key));
+CREATE TABLE IF NOT EXISTS thread_state(node_id TEXT NOT NULL, thread_kind TEXT NOT NULL, thread_key TEXT NOT NULL, last_read_id INTEGER NOT NULL DEFAULT 0, notify TEXT NOT NULL DEFAULT 'default', archived_id INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(node_id, thread_kind, thread_key));
 ";
 
 /// Handle to the database; clones share one connection.
@@ -513,7 +513,7 @@ impl Store {
     // ── Threads and read state ──────────────────────────────────────────────
 
     /// Lists conversations: every stored channel by slot, then contact
-    /// threads with messages, newest first.
+    /// threads with a message newer than their archive marker, newest first.
     ///
     /// # Errors
     ///
@@ -534,7 +534,9 @@ impl Store {
         }
 
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT thread_key FROM messages WHERE node_id = ?1 AND thread_kind = 'contact'",
+            "SELECT thread_key FROM messages m WHERE node_id = ?1 AND thread_kind = 'contact' \
+             GROUP BY thread_key HAVING max(id) > coalesce((SELECT archived_id FROM thread_state \
+             WHERE node_id = ?1 AND thread_kind = 'contact' AND thread_key = m.thread_key), 0)",
         )?;
         let keys: Vec<String> = stmt
             .query_map(params![node], |r| r.get(0))?
@@ -610,6 +612,34 @@ impl Store {
              ON CONFLICT(node_id, thread_kind, thread_key) \
              DO UPDATE SET last_read_id = excluded.last_read_id",
             params![node, kind, key, newest_in - 1],
+        )?;
+
+        Ok(())
+    }
+
+    /// Takes contact `thread` off [`Store::threads`] and marks it read. Its
+    /// history stays, and the next message in either direction lists it
+    /// again. A channel is always listed, so archiving one has no effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] on SQLite failure.
+    pub fn archive(&self, node: &str, thread: &ThreadId) -> Result<()> {
+        let conn = self.lock();
+        let (kind, key) = thread_key(&conn, node, thread)?;
+        let newest: i64 = conn.query_row(
+            "SELECT coalesce(max(id), 0) FROM messages \
+             WHERE node_id = ?1 AND thread_kind = ?2 AND thread_key = ?3",
+            params![node, kind, key],
+            |r| r.get(0),
+        )?;
+
+        conn.execute(
+            "INSERT INTO thread_state(node_id, thread_kind, thread_key, last_read_id, archived_id) \
+             VALUES(?1, ?2, ?3, ?4, ?4) \
+             ON CONFLICT(node_id, thread_kind, thread_key) \
+             DO UPDATE SET last_read_id = excluded.last_read_id, archived_id = excluded.archived_id",
+            params![node, kind, key, newest],
         )?;
 
         Ok(())
@@ -759,18 +789,27 @@ fn init_schema(conn: &mut Connection) -> Result<()> {
                 });
             }
 
-            match found {
-                1 => {
-                    tx.execute_batch(
-                        "ALTER TABLE thread_state ADD COLUMN notify TEXT NOT NULL DEFAULT 'default';",
-                    )?;
-                    tx.execute(
-                        "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
-                        params![SCHEMA_VERSION.to_string()],
-                    )?;
-                }
-                SCHEMA_VERSION => {}
-                _ => return Err(Error::Invalid(format!("unknown schema_version {found}"))),
+            if found == 0 {
+                return Err(Error::Invalid(format!("unknown schema_version {found}")));
+            }
+
+            if found < 2 {
+                tx.execute_batch(
+                    "ALTER TABLE thread_state ADD COLUMN notify TEXT NOT NULL DEFAULT 'default';",
+                )?;
+            }
+
+            if found < 3 {
+                tx.execute_batch(
+                    "ALTER TABLE thread_state ADD COLUMN archived_id INTEGER NOT NULL DEFAULT 0;",
+                )?;
+            }
+
+            if found < SCHEMA_VERSION {
+                tx.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                    params![SCHEMA_VERSION.to_string()],
+                )?;
             }
         }
     }
@@ -1311,7 +1350,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn should_write_schema_version_two_on_a_fresh_file() {
+        fn should_write_the_current_schema_version_on_a_fresh_file() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("fresh.db");
 
@@ -1325,7 +1364,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "2");
+            assert_eq!(version, SCHEMA_VERSION.to_string());
         }
 
         #[test]
@@ -1337,6 +1376,73 @@ mod tests {
 
             assert!(opened.is_ok(), "open failed: {:?}", opened.err());
             assert!(path.is_file());
+        }
+    }
+
+    mod archive {
+        use super::*;
+
+        /// Alice's direct thread.
+        fn alice() -> ThreadId {
+            ThreadId::Contact("a1a1a1a1a1a1".into())
+        }
+
+        /// An incoming message from Alice with text `body`, sent at `ts`.
+        fn from_alice(body: &str, ts: u32) -> NewMessage {
+            NewMessage {
+                thread: alice(),
+                direction: Direction::In,
+                sender: None,
+                text: body.into(),
+                sender_ts: ts,
+                received_at: i64::from(ts),
+                path_len: None,
+                snr: None,
+                status: DeliveryStatus::Received,
+            }
+        }
+
+        /// The threads listed for `NODE`.
+        fn listed(s: &Store) -> Vec<ThreadId> {
+            s.threads(NODE)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.thread)
+                .collect()
+        }
+
+        #[test]
+        fn should_unlist_the_thread_and_mark_it_read_but_keep_its_history() {
+            let s = Store::open_memory().unwrap();
+
+            s.insert_message(NODE, &from_alice("hello", 1)).unwrap();
+            s.archive(NODE, &alice()).unwrap();
+
+            assert_eq!(listed(&s), Vec::<ThreadId>::new());
+            assert_eq!(s.unread_total(NODE).unwrap(), 0);
+            assert_eq!(s.messages(NODE, &alice(), 10).unwrap().len(), 1);
+        }
+
+        #[test]
+        fn should_list_the_thread_again_when_a_new_message_arrives() {
+            let s = Store::open_memory().unwrap();
+
+            s.insert_message(NODE, &from_alice("hello", 1)).unwrap();
+            s.archive(NODE, &alice()).unwrap();
+            s.insert_message(NODE, &from_alice("again", 2)).unwrap();
+
+            assert_eq!(listed(&s), [alice()]);
+        }
+
+        #[test]
+        fn should_keep_the_notification_mode() {
+            let s = Store::open_memory().unwrap();
+
+            s.insert_message(NODE, &from_alice("hello", 1)).unwrap();
+            s.set_notify(NODE, &alice(), NotifyMode::Mute).unwrap();
+            s.archive(NODE, &alice()).unwrap();
+
+            assert_eq!(s.notify_mode(NODE, &alice()).unwrap(), NotifyMode::Mute);
         }
     }
 
