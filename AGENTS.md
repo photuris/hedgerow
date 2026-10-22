@@ -45,8 +45,11 @@ Read `README.md` first. This file holds what the code does not say.
   write the session reconnects, so the slot map is read again.
 - `meshcore-rs` is vendored with three patches (contact URI hex encoding, reply
   subscription before enqueue, BLE link-loss detection). Keep
-  `vendor/meshcore-rs/PATCHES.md` current. The vendored crate is excluded from
-  the workspace, so workspace clippy does not lint it.
+  `vendor/meshcore-rs/PATCHES.md` current. `bluez-async` (Linux BLE, under
+  `btleplug`) is vendored with one patch: no panic when a D-Bus match is
+  already gone at disconnect. Keep `vendor/bluez-async/PATCHES.md` current.
+  Vendored crates are excluded from the workspace, so workspace clippy does
+  not lint them.
 - `std::env::set_var` only in a synchronous `main`. Tests use the `_at` and
   `open_memory` entry points.
 - Dioxus 0.7: `document::Style` inserts once, so dynamic CSS goes in a plain

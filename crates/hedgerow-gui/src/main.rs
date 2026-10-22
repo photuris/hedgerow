@@ -8,7 +8,8 @@ mod theme;
 #[cfg(test)]
 mod ui_tests;
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use dioxus::desktop::{Config as WindowConfig, LogicalSize, WindowBuilder};
 use hedgerow_core::config::{Config, data_dir};
@@ -17,20 +18,65 @@ use hedgerow_core::store::Store;
 
 use crate::app::{App, Boot, Hooks};
 
+/// Size past which the log file is moved to `hedgerow.log.1` at start.
+const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+
 /// Installs the log subscriber before Dioxus does. `RUST_LOG` overrides the default, which is
 /// `info` with the Dioxus edit-socket target silenced: WebKitGTK probes that socket with a plain
 /// HTTP request before upgrading, and Dioxus logs the harmless rejection as an error on every start.
-fn init_logging() {
+///
+/// Logs go to stderr and, outside UI-test mode, to `hedgerow.log` in the data directory, so a
+/// launcher-started app leaves a trail. Panics are logged too.
+fn init_logging(ui_test: bool) {
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,dioxus_desktop::edits=off,html5ever=error"));
+    let log_path = data_dir().join("hedgerow.log");
+    let file = (!ui_test).then(|| open_log(&log_path, LOG_ROTATE_BYTES));
+    let file_layer = file.as_ref().and_then(|f| f.as_ref().ok()).and_then(|f| {
+        let f = f.try_clone().ok()?;
+
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(f)),
+        )
+    });
 
     // A second subscriber (Dioxus installs its own when none exists) is not an error here.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(file_layer)
         .try_init();
+
+    if let Some(Err(e)) = file {
+        tracing::warn!("log file {}: {e}", log_path.display());
+    }
+
+    let default_hook = std::panic::take_hook();
+
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        default_hook(info);
+    }));
+}
+
+/// Opens `path` for appending, first moving it to `<path>.1` when it is over `max` bytes.
+///
+/// ponytail: rotates only at start, so one very long run can grow past `max`.
+fn open_log(path: &Path, max: u64) -> std::io::Result<File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > max) {
+        std::fs::rename(path, path.with_extension("log.1"))?;
+    }
+
+    File::options().create(true).append(true).open(path)
 }
 
 /// Reads the test hooks. The only place that touches the process environment.
@@ -67,13 +113,14 @@ fn boot(ui_test: bool, hooks: Hooks) -> hedgerow_core::Result<Boot> {
 }
 
 fn main() {
-    init_logging();
-
     let ui_test = std::env::var("HEDGEROW_UI_TEST").is_ok_and(|v| !v.is_empty() && v != "0");
+
+    init_logging(ui_test);
+
     let boot = match boot(ui_test, hooks_from_env()) {
         Ok(boot) => boot,
         Err(e) => {
-            eprintln!("hedgerow: {e}");
+            tracing::error!("hedgerow: {e}");
             std::process::exit(1);
         }
     };
@@ -157,7 +204,28 @@ fn is_tiling_session(xdg_current_desktop: &str, tiler_socket: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
+
+    #[test]
+    fn should_append_below_the_limit_and_rotate_above_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logs/hedgerow.log");
+
+        writeln!(open_log(&path, 10).unwrap(), "first").unwrap();
+        writeln!(open_log(&path, 10).unwrap(), "second").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+
+        writeln!(open_log(&path, 10).unwrap(), "third").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "third\n");
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("log.1")).unwrap(),
+            "first\nsecond\n"
+        );
+    }
 
     #[test]
     fn tiling_detection() {

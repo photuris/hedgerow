@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["vendor/meshcore-rs"]
+exclude = ["vendor/bluez-async", "vendor/meshcore-rs"]
 
 [workspace.package]
 edition = "2024"
@@ -34,4 +34,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unwrap_used = "deny"
 
 [patch.crates-io]
+bluez-async = { path = "vendor/bluez-async" }
 meshcore-rs = { path = "vendor/meshcore-rs" }

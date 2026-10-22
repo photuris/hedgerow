@@ -58,6 +58,7 @@ servers, repeater administration, and telemetry are not in it yet.
 | `assets/icon` | The SVG icon masters. |
 | `packaging/` | Generated icons (Linux, macOS, Windows), the Linux launcher entry, and the Arch `PKGBUILD`. |
 | `scripts/render-icons.sh` | Renders the icons in `packaging/` from `assets/icon`. |
+| `vendor/bluez-async` | [`bluez-async`](https://github.com/bluez-rs/bluez-async) 0.8.2 (MIT or Apache-2.0) with one patch. `PATCHES.md` lists it. |
 | `vendor/meshcore-rs` | [`meshcore-rs`](https://github.com/andrewdavidmackenzie/meshcore-rs) 0.2.0 (MIT) with three patches. `PATCHES.md` lists them. |
 
 ## Build and run
@@ -132,6 +133,9 @@ Data lives in `$HEDGEROW_DATA_DIR`, default `~/.local/share/hedgerow`
 - `config.toml`: the connection settings and UI options.
 - `hedgerow.db`: the message history, contacts, and channels, scoped by
   the radio's public key.
+- `hedgerow.log`: the log, also written to stderr, panics included. At
+  start, a log over 5 MB moves to `hedgerow.log.1`. `RUST_LOG` sets the
+  level, for example `RUST_LOG=info,hedgerow_core=debug`.
 
 The radio holds incoming messages in a queue until a client fetches them.
 Hedgerow fetches them and stores them in `hedgerow.db`. After that, the
@@ -156,7 +160,7 @@ decorations = "auto"       # "auto", "on", or "off"
 ## UI test mode
 
 `HEDGEROW_UI_TEST=1 hedgerow` runs on an in-memory store with a fake
-radio full of demo data. It never reads or writes the config, and it never
+radio full of demo data. It never reads or writes the config or the log, and it never
 touches Bluetooth or serial ports. These variables help with automated
 checks:
 
@@ -183,8 +187,6 @@ cargo run -p hedgerow-core --example probe -- --ble AA:BB:CC:DD:EE:FF
   the attempt finishes.
 - `meshcore-rs` reports a contact capacity of at most 255. The device
   panel shows `≥255` for that value.
-- On Linux, `bluez-async` can log a panic from a background task when a
-  Bluetooth link closes. The app keeps running.
 - The GUI reads the store on the UI thread. Long database writes can
   stall the UI for a moment.
 - Direct messages are not resent automatically. Use Retry on a failed
