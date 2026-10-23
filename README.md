@@ -4,6 +4,8 @@ A desktop chat client for [MeshCore](https://meshcore.co.uk) companion
 radios. It's written in Rust, with a Dioxus 0.7 desktop GUI. A hedgerow is
 a living mesh strung between fields.
 
+![Hedgerow showing the Public channel, with channels and direct messages in the sidebar](docs/screenshot.png)
+
 This is a first pass. It covers chat in channels and direct threads,
 unread tracking, contacts, channels, and device settings. GPS, maps, room
 servers, repeater administration, and telemetry are not in it yet.
@@ -174,6 +176,10 @@ checks:
 | `HEDGEROW_EXIT_AFTER_MS=<n>` | Exit with code 0 after n milliseconds. |
 | `HEDGEROW_DUMP_TEXT=<path>` | Before that exit, write the page text to `<path>` and the main view's text to `<path>.main`. |
 | `HEDGEROW_START_VIEW=<view>` | Open `thread:channel:<idx>`, `thread:contact:<prefix>`, `contacts`, or `settings:<connection\|device\|channels>`. |
+
+`scripts/screenshot.sh [view] [out.png]` retakes `docs/screenshot.png` in this
+mode, on a private Xvfb display and session bus, so no window opens on your
+desktop. It needs `xorg-server-xvfb` and ImageMagick.
 
 ## Hardware check
 
