@@ -235,8 +235,18 @@ fn NavFooter() -> Element {
 
     rsx! {
         div { class: "side-foot",
-            button { onclick: move |_| view.set(View::Contacts), "Contacts" }
-            button { onclick: move |_| ui.open_settings(SettingsTab::Connection), "Settings" }
+            button {
+                class: if matches!(view(), View::Contacts) { "nav-item active" } else { "nav-item" },
+                onclick: move |_| view.set(View::Contacts),
+                Icon { name: "users" }
+                "Contacts"
+            }
+            button {
+                class: if matches!(view(), View::Settings(_)) { "nav-item active" } else { "nav-item" },
+                onclick: move |_| ui.open_settings(SettingsTab::Connection),
+                Icon { name: "settings" }
+                "Settings"
+            }
         }
     }
 }
