@@ -21,6 +21,15 @@ const BATTERY_EMPTY_MV: u16 = 3300;
 /// Battery voltage that reads as 100 %.
 const BATTERY_FULL_MV: u16 = 4200;
 
+/// Sender label lightness in light and dark mode (percent) and chroma.
+const NAME_LIGHT: (u8, f64) = (48, 0.08);
+const NAME_DARK: (u8, f64) = (78, 0.11);
+
+/// The bubble tint color (percent lightness, chroma) and how much of it
+/// mixes into the raised surface (percent).
+const TINT: (u8, f64) = (70, 0.11);
+const TINT_MIX: u8 = 20;
+
 /// `ts` as a local date and time (the epoch when out of range).
 fn local(ts: i64) -> DateTime<Local> {
     Local.timestamp_opt(ts, 0).single().unwrap_or_default()
@@ -104,6 +113,35 @@ pub fn name_hue(name: &str) -> u16 {
     });
 
     u16::try_from(hash % 360).unwrap_or(0)
+}
+
+/// The inline style for an incoming channel bubble sent by `name`.
+///
+/// `--name` colors the sender label, and `--tint` is the bubble background.
+/// Both come from the hue of [`name_hue`]: `--name` switches between a dark
+/// and a light variant with `light-dark`, and `--tint` mixes a little of the
+/// hue into the raised surface, so it follows the theme. The contrast test in
+/// this module checks [`NAME_LIGHT`], [`NAME_DARK`], [`TINT`] and
+/// [`TINT_MIX`] against the supported themes.
+pub fn name_style(name: &str) -> String {
+    let hue = name_hue(name);
+    let (light_l, light_c) = NAME_LIGHT;
+    let (dark_l, dark_c) = NAME_DARK;
+    let (tint_l, tint_c) = TINT;
+
+    format!(
+        "--name: light-dark(oklch({light_l}% {light_c:.2} {hue}), oklch({dark_l}% {dark_c:.2} {hue})); \
+         --tint: color-mix(in oklab, oklch({tint_l}% {tint_c:.2} {hue}) {TINT_MIX}%, var(--surface-raised))"
+    )
+}
+
+/// The label of the shortcut `Ctrl+key`, or `⌘key` on macOS.
+pub fn chord(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
 }
 
 /// Battery charge from its voltage: linear from 3300 mV (0 %) to 4200 mV
@@ -326,6 +364,168 @@ mod tests {
             for (name, hue) in expected {
                 assert_eq!(name_hue(name), hue, "{name}");
             }
+        }
+    }
+
+    mod name_style {
+        use super::*;
+
+        /// A color as three channels, in whatever space the caller says.
+        type Rgb = [f64; 3];
+
+        /// Decodes a gamma-encoded sRGB channel to linear light.
+        fn decode(c: f64) -> f64 {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        /// A `#rrggbb` color as gamma-encoded channels in 0..=1.
+        fn hex(color: &str) -> Rgb {
+            let channel =
+                |at: usize| f64::from(u8::from_str_radix(&color[at..at + 2], 16).unwrap()) / 255.0;
+
+            [channel(1), channel(3), channel(5)]
+        }
+
+        /// Linear-light channels of gamma-encoded ones.
+        fn linear(encoded: Rgb) -> Rgb {
+            encoded.map(decode)
+        }
+
+        /// Linear sRGB to OKLab (Ottosson).
+        fn to_oklab([r, g, b]: Rgb) -> Rgb {
+            let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+            let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+            let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+
+            [
+                0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+                1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+                0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+            ]
+        }
+
+        /// OKLab to linear sRGB (Ottosson), without any clamping.
+        fn from_oklab([lightness, a, b]: Rgb) -> Rgb {
+            let l = (lightness + 0.3963377774 * a + 0.2158037573 * b).powi(3);
+            let m = (lightness - 0.1055613458 * a - 0.0638541728 * b).powi(3);
+            let s = (lightness - 0.0894841775 * a - 1.2914855480 * b).powi(3);
+
+            [
+                4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+                -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+            ]
+        }
+
+        /// `oklch(lightness% chroma hue)` as OKLab.
+        fn oklch((lightness, chroma): (u8, f64), hue: u16) -> Rgb {
+            let radians = f64::from(hue).to_radians();
+
+            [
+                f64::from(lightness) / 100.0,
+                chroma * radians.cos(),
+                chroma * radians.sin(),
+            ]
+        }
+
+        /// Whether every linear channel is inside sRGB, within rounding.
+        fn in_gamut(linear: Rgb) -> bool {
+            linear.iter().all(|c| (-1e-6..=1.0 + 1e-6).contains(c))
+        }
+
+        /// WCAG relative luminance of linear channels, clamped to sRGB.
+        fn luminance(linear: Rgb) -> f64 {
+            let [r, g, b] = linear.map(|c| c.clamp(0.0, 1.0));
+
+            0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
+        /// WCAG contrast ratio of two linear colors.
+        fn contrast(a: Rgb, b: Rgb) -> f64 {
+            let (a, b) = (luminance(a), luminance(b));
+
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        }
+
+        /// A fixture theme: name, dark mode, background, foreground and the
+        /// raised surface, with `None` meaning the stylesheet default.
+        type Theme = (
+            &'static str,
+            bool,
+            &'static str,
+            &'static str,
+            Option<&'static str>,
+        );
+
+        const THEMES: [Theme; 6] = [
+            ("default-light", false, "#ffffff", "#000000", None),
+            ("default-dark", true, "#1a1a1a", "#ffffff", None),
+            ("omarchy-dark", true, "#1A1915", "#ECE9E1", Some("#211F1A")),
+            ("latte", false, "#EFF1F5", "#4C4F69", Some("#E6E9EF")),
+            ("dawn", false, "#FAF4ED", "#575279", Some("#F2E9E1")),
+            ("gruvbox", true, "#282828", "#D4BE98", Some("#32302F")),
+        ];
+
+        #[test]
+        fn should_render_the_alice_style() {
+            assert_eq!(
+                name_style("Alice"),
+                "--name: light-dark(oklch(48% 0.08 143), oklch(78% 0.11 143)); --tint: color-mix(in oklab, oklch(70% 0.11 143) 20%, var(--surface-raised))"
+            );
+        }
+
+        #[test]
+        fn should_keep_text_readable_on_every_theme() {
+            for (name, dark, bg, fg, raised) in THEMES {
+                let (bg, fg) = (hex(bg), hex(fg));
+                // `color-mix(in srgb, fg 5%, bg)` mixes the encoded channels.
+                let raised =
+                    raised.map_or_else(|| [0, 1, 2].map(|i| 0.05 * fg[i] + 0.95 * bg[i]), hex);
+                let raised = to_oklab(linear(raised));
+                let label = if dark { NAME_DARK } else { NAME_LIGHT };
+
+                for hue in 0..360 {
+                    let name_color = from_oklab(oklch(label, hue));
+                    let tint = from_oklab(oklch(TINT, hue));
+
+                    assert!(
+                        in_gamut(name_color) && in_gamut(tint),
+                        "{name} hue {hue}: name {name_color:?} or tint {tint:?} outside sRGB"
+                    );
+
+                    let ratio = contrast(name_color, linear(bg));
+
+                    assert!(
+                        ratio >= 4.5,
+                        "{name} hue {hue}: name on background is {ratio:.2}"
+                    );
+
+                    let share = f64::from(TINT_MIX) / 100.0;
+                    let tint = to_oklab(tint);
+                    let bubble =
+                        from_oklab([0, 1, 2].map(|i| share * tint[i] + (1.0 - share) * raised[i]));
+                    let ratio = contrast(linear(fg), bubble);
+
+                    assert!(
+                        ratio >= 4.5,
+                        "{name} hue {hue}: text on bubble is {ratio:.2}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chord_should_name_the_platform_modifier() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(chord("B"), "⌘B");
+        } else {
+            assert_eq!(chord("B"), "Ctrl+B");
+            assert_eq!(chord(","), "Ctrl+,");
         }
     }
 

@@ -32,6 +32,7 @@ use hedgerow_core::session::{Command, ConnState};
 use hedgerow_core::store::Store;
 
 use crate::app::{self, App, Boot, Hooks, SettingsTab, Ui, View, now_secs};
+use crate::format;
 use crate::notifier;
 
 /// The warning the device confirmation appends when radio parameters change.
@@ -1733,7 +1734,10 @@ async fn sidebar_toggle_button_collapses_and_reopens_keeping_the_width() {
     mouse(&dom, &panes(&dom), "mouseup", 330.0);
     assert!(sidebar_shown(&dom));
 
-    click(&dom, &titled_button(&dom, "Hide sidebar"));
+    click(
+        &dom,
+        &titled_button(&dom, &format!("Hide sidebar ({})", format::chord("B"))),
+    );
     settle(&mut dom).await;
 
     assert!(
@@ -1746,7 +1750,10 @@ async fn sidebar_toggle_button_collapses_and_reopens_keeping_the_width() {
         panes(&dom).attr("style")
     );
 
-    click(&dom, &titled_button(&dom, "Show sidebar"));
+    click(
+        &dom,
+        &titled_button(&dom, &format!("Show sidebar ({})", format::chord("B"))),
+    );
     settle(&mut dom).await;
 
     assert!(sidebar_shown(&dom));
@@ -1774,18 +1781,27 @@ async fn sidebar_folds_in_a_narrow_window_and_returns_when_it_widens() {
     settle(&mut dom).await;
     assert!(sidebar_shown(&dom), "widening brings a folded sidebar back");
 
-    click(&dom, &titled_button(&dom, "Hide sidebar"));
+    click(
+        &dom,
+        &titled_button(&dom, &format!("Hide sidebar ({})", format::chord("B"))),
+    );
     resize(&dom, 400);
     resize(&dom, 1200);
     settle(&mut dom).await;
     assert!(sidebar_gone(&dom), "a sidebar hidden by hand stays hidden");
 
-    click(&dom, &titled_button(&dom, "Show sidebar"));
+    click(
+        &dom,
+        &titled_button(&dom, &format!("Show sidebar ({})", format::chord("B"))),
+    );
     resize(&dom, 400);
     settle(&mut dom).await;
     assert!(sidebar_gone(&dom), "narrowing folds it again");
 
-    click(&dom, &titled_button(&dom, "Show sidebar"));
+    click(
+        &dom,
+        &titled_button(&dom, &format!("Show sidebar ({})", format::chord("B"))),
+    );
     resize(&dom, 1200);
     settle(&mut dom).await;
     assert!(
@@ -2510,4 +2526,141 @@ async fn notification_click_for_a_replaced_channel_is_ignored() {
     settle(&mut dom).await;
 
     assert_eq!(*ui.view.peek(), View::Contacts);
+}
+
+// ── Bubbles and shortcuts ───────────────────────────────────────────────────
+
+/// The `msg in` elements of the page.
+fn incoming_bubbles(dom: &VirtualDom) -> Vec<El> {
+    els(dom)
+        .into_iter()
+        .filter(|e| e.attr("class") == Some("msg in"))
+        .collect()
+}
+
+/// The sender of the stored message behind a `msg-<id>` element.
+fn sender_of(ui: &Ui, node: &str, bubble: &El) -> Option<String> {
+    let id: i64 = bubble
+        .attr("id")
+        .unwrap()
+        .strip_prefix("msg-")
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    ui.store
+        .messages(node, &ThreadId::Channel(0), 100)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == id)
+        .unwrap()
+        .sender
+}
+
+#[tokio::test]
+async fn named_incoming_bubbles_carry_the_name_style() {
+    let (dom, ui, _fake) = setup("thread:channel:0").await;
+    let node = device(&ui).node_id;
+    let bubbles = incoming_bubbles(&dom);
+    let senders: Vec<String> = bubbles
+        .iter()
+        .map(|b| sender_of(&ui, &node, b).expect("demo channel messages are named"))
+        .collect();
+
+    assert_eq!(
+        bubbles.len(),
+        3,
+        "the demo channel has three incoming messages"
+    );
+
+    for (bubble, sender) in bubbles.iter().zip(&senders) {
+        assert_eq!(
+            bubble.attr("style"),
+            Some(format::name_style(sender).as_str()),
+            "{sender}"
+        );
+    }
+
+    assert!(senders.iter().any(|s| s == "Bob"));
+    assert!(senders.iter().any(|s| s == "Alice"));
+}
+
+#[tokio::test]
+async fn direct_message_bubbles_have_no_name_style() {
+    let (dom, _ui, _fake) = setup(&format!("thread:contact:{}", alice().key())).await;
+    let messages: Vec<El> = els(&dom)
+        .into_iter()
+        .filter(|e| e.has_class("msg"))
+        .collect();
+
+    assert!(!messages.is_empty(), "Alice's direct thread has messages");
+
+    for message in &messages {
+        assert_eq!(message.attr("style"), None, "{:?}", message.attr("id"));
+    }
+}
+
+#[tokio::test]
+async fn ctrl_comma_opens_settings_once() {
+    let (mut dom, ui, _fake) = setup("thread:channel:0").await;
+
+    ctrl(&dom, ",");
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Settings(SettingsTab::Connection));
+
+    in_app(&dom, || ui.open_settings(SettingsTab::Device));
+    ctrl(&dom, ",");
+    settle(&mut dom).await;
+
+    assert_eq!(*ui.view.peek(), View::Settings(SettingsTab::Device));
+
+    in_app(&dom, || ui.close_settings());
+
+    assert_eq!(*ui.view.peek(), View::Thread(ThreadId::Channel(0)));
+}
+
+#[tokio::test]
+async fn unnamed_and_outgoing_channel_bubbles_have_no_name_style() {
+    let (mut dom, ui, _fake) = setup("thread:channel:0").await;
+    let node = device(&ui).node_id;
+    let unnamed = NewMessage {
+        sender: None,
+        ..incoming("from nobody")
+    };
+    let outgoing = NewMessage {
+        direction: Direction::Out,
+        sender: None,
+        status: DeliveryStatus::Sent,
+        ..incoming("from me")
+    };
+    let unnamed_id = ui.store.insert_message(&node, &unnamed).unwrap().unwrap();
+    let outgoing_id = ui.store.insert_message(&node, &outgoing).unwrap().unwrap();
+
+    in_app(&dom, || ui.bump());
+    settle(&mut dom).await;
+
+    for id in [unnamed_id, outgoing_id] {
+        assert_eq!(
+            by_id(&dom, &format!("msg-{id}")).attr("style"),
+            None,
+            "msg-{id}"
+        );
+    }
+
+    let named: Vec<El> = incoming_bubbles(&dom)
+        .into_iter()
+        .filter(|b| b.attr("id") != Some(&format!("msg-{unnamed_id}")))
+        .collect();
+
+    assert_eq!(named.len(), 3);
+
+    for bubble in &named {
+        let sender = sender_of(&ui, &node, bubble).unwrap();
+
+        assert_eq!(
+            bubble.attr("style"),
+            Some(format::name_style(&sender).as_str())
+        );
+    }
 }

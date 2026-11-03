@@ -19,6 +19,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::components::{
     Chat, Contacts, ExportDialog, Icon, SearchResults, Settings, Sidebar, Toast,
 };
+use crate::format;
 use crate::notifier;
 use crate::theme::{self, Theme, Watcher};
 
@@ -148,10 +149,13 @@ enum Shortcut {
     ToggleSidebar,
     /// Open the sidebar and focus the search box.
     FocusSearch,
+    /// Open the settings, unless they are already showing.
+    OpenSettings,
 }
 
-/// The shortcut for `key` pressed with `modifiers`: Ctrl+B and Ctrl+F, or
-/// Cmd+B and Cmd+F on macOS. Shift and Alt turn a chord into another one.
+/// The shortcut for `key` pressed with `modifiers`: Ctrl+B, Ctrl+F and
+/// Ctrl+`,`, or Cmd+B, Cmd+F and Cmd+`,` on macOS. Shift and Alt turn a
+/// chord into another one.
 fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
     let command = modifiers.contains(Modifiers::CONTROL)
         || (cfg!(target_os = "macos") && modifiers.contains(Modifiers::META));
@@ -167,6 +171,7 @@ fn shortcut(key: &Key, modifiers: Modifiers) -> Option<Shortcut> {
     match letter.to_ascii_lowercase().as_str() {
         "b" => Some(Shortcut::ToggleSidebar),
         "f" => Some(Shortcut::FocusSearch),
+        "," => Some(Shortcut::OpenSettings),
         _ => None,
     }
 }
@@ -645,6 +650,11 @@ impl Ui {
         match shortcut {
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::FocusSearch => self.open_search(),
+            Shortcut::OpenSettings => {
+                if !matches!(*self.view.peek(), View::Settings(_)) {
+                    self.open_settings(SettingsTab::Connection);
+                }
+            }
         }
     }
 
@@ -1137,7 +1147,7 @@ pub fn App() -> Element {
                         div { class: "main-bar",
                             button {
                                 class: "tool",
-                                title: "Show sidebar",
+                                title: format!("Show sidebar ({})", format::chord("B")),
                                 onclick: {
                                     let ui = ui.clone();
 
@@ -1352,6 +1362,19 @@ mod tests {
             assert_eq!(
                 shortcut(&letter("f"), Modifiers::CONTROL),
                 Some(Shortcut::FocusSearch)
+            );
+        }
+
+        #[test]
+        fn should_map_ctrl_comma_to_settings() {
+            assert_eq!(
+                shortcut(&letter(","), Modifiers::CONTROL),
+                Some(Shortcut::OpenSettings)
+            );
+            assert_eq!(shortcut(&letter(","), Modifiers::empty()), None);
+            assert_eq!(
+                shortcut(&letter(","), Modifiers::CONTROL | Modifiers::SHIFT),
+                None
             );
         }
 

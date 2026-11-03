@@ -160,7 +160,7 @@ fn SideHead() -> Element {
         div { class: "side-head",
             button {
                 class: "tool",
-                title: "Hide sidebar",
+                title: format!("Hide sidebar ({})", format::chord("B")),
                 onclick: {
                     let ui = ui.clone();
 
@@ -170,6 +170,7 @@ fn SideHead() -> Element {
             }
             input {
                 id: "sidebar-search",
+                title: format!("Search messages ({})", format::chord("F")),
                 r#type: "text",
                 placeholder: "Search messages",
                 value: "{search}",
@@ -243,6 +244,7 @@ fn NavFooter() -> Element {
             }
             button {
                 class: if matches!(view(), View::Settings(_)) { "nav-item active" } else { "nav-item" },
+                title: format!("Settings ({})", format::chord(",")),
                 onclick: move |_| ui.open_settings(SettingsTab::Connection),
                 Icon { name: "settings" }
                 "Settings"

@@ -299,12 +299,9 @@ fn Bubble(
                 (true, true) => "msg out flash",
                 (false, true) => "msg in flash",
             },
-            if let Some(sender) = sender {
-                div {
-                    class: "msg-sender",
-                    style: "color: hsl({format::name_hue(&sender)} 60% 60%)",
-                    "{sender}"
-                }
+            style: sender.as_deref().map(format::name_style),
+            if let Some(sender) = &sender {
+                div { class: "msg-sender", "{sender}" }
             }
             div { class: "bubble", title: "{format::hover_title(&message)}", "{message.text}" }
             div { class: "msg-meta",
