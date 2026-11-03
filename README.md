@@ -18,6 +18,9 @@ servers, repeater administration, and telemetry are not in it yet.
   badges. The window title shows the total unread count.
 - Chat view with day separators, sender names, delivery state for direct
   messages (pending, sent, delivered, failed), and Retry for failed sends.
+  Each channel sender gets a stable color: the name and a light tint of the
+  bubble share one hue, chosen to keep text readable in light and dark
+  themes.
 - Marks a thread read when you open it. Right-click a thread to mark it
   read or unread, or use "Mark all read".
 - Archives a direct-message thread: right-click it and choose Archive. The
@@ -37,6 +40,8 @@ servers, repeater administration, and telemetry are not in it yet.
   `config.toml` as `ui.sidebar_width`). Press Ctrl+B (Cmd+B on macOS) or
   use the panel button to hide or show it. The collapsed state is not
   saved.
+- Ctrl+, (Cmd+, on macOS) opens Settings. Buttons with a shortcut show it
+  in their tooltip.
 - Raises desktop notifications for direct messages and for channel
   messages that mention your radio's name (`@[Name]` or `@Name`), while
   the window does not have focus. Each conversation raises at most one
